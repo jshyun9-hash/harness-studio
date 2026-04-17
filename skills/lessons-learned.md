@@ -52,3 +52,37 @@
     // ✅
     public static CheckIdResponse ofAvailable() { ... }
     ```
+
+14. **Spring Initializr 가 Spring Boot 4.0 Milestone 을 기본값으로 내려줄 수 있다** — `bootVersion` 생략 시 Initializr 가 4.0.x (Milestone/RC) 를 내려주는 경우가 있고, 이 버전의 starter 네이밍은 기존(3.x)과 달라 표준 문서/예제와 불일치. 예: `spring-boot-starter-web` 대신 `spring-boot-starter-webmvc`, `spring-boot-starter-test` 대신 `spring-boot-starter-{module}-test` 등. 또한 `spring-boot-h2console` 같이 starter 가 아닌 모듈도 포함됨.
+    - 해결: 생성 직후 `build.gradle.kts` 의 `id("org.springframework.boot") version` 을 **안정 버전 (3.5.x)** 으로 고정 + 의존성 이름을 표준 starter 로 교체 (`spring-boot-starter-web`, `spring-boot-starter-test`)
+    - init-backend 스킬에서 Initializr 호출 직후 build.gradle.kts 버전 고정을 루틴화 권장
+
+15. **SQL 예약어 테이블명 회피** — `cast` 는 H2/MySQL/PostgreSQL 등에서 CAST(x AS y) 함수의 예약어. `@Table(name = "cast")` 는 DDL 생성 시 실패하거나 런타임에 문제. 해결:
+    - 엔티티 클래스명 유지, `@Table(name = "cast_member")` 처럼 테이블명만 회피
+    - YML 명세의 `table` 값도 동일하게 수정 (문서와 코드 일치)
+    - 기타 주의 예약어: `order`, `user`, `group`, `check`, `cast`, `schema`, `table`
+
+16. **공통 코드 엔티티(CodeItem) 참조 시 컬럼명 관례는 `{의미}_code_id`** — 예: `country_code_id`, `genre_code_id`. 공통 코드 그룹별 enum 스타일 FK. Service 에서 `code_group` 힌트로 그룹 소속 검증 (`CodeService.assertBelongsTo`).
+
+17. **StoredFile 공통 엔티티는 자동 주입** — 모든 프로젝트의 양쪽 백엔드(split) 에 `StoredFile` 엔티티 + Repository + FileService 생성. 디스크 저장 파일명은 확장자 없이 `{file_key}` (UUID v4) 만 사용. DB `ext`/`mime_type` 으로만 원본 타입 복구.
+
+18. **HTML 프로토타입은 screen visibility state machine 을 React Router 로 분할한다** — 단일 HTML 파일의 모바일 mockup(예: `prototype_claude.html`)은 보통 "app container + 여러 `<section class="screen">` + JS 로 `.active` 토글" 구조다. 이를 React 에 포팅할 때 **show/hide state machine 을 그대로 복제하지 말고** 각 screen 을 독립 라우트 페이지로 분할한다:
+    - `PhoneFrame` (desktop 프레임 + StatusBar) = 공통 shell
+    - 각 screen = 자신의 스크롤/sticky bottom bar 를 책임지는 페이지
+    - 화면 간 이동 = `useNavigate()` / `<Link>`, 뒤로가기 = `navigate(-1)`
+    - 같은 원본 HTML 을 여러 페이지에서 재사용하는 요소 (예: 하단 Survey 배너, BottomNav) 는 별도 컴포넌트로 추출
+    ```tsx
+    // ❌ HTML 상태 기계 복제
+    const [screen, setScreen] = useState<'home'|'search'|'detail'>('home');
+    return <div>{screen === 'home' && <Home/>}{screen === 'search' && <Search/>}...</div>;
+
+    // ✅ Router 로 분할
+    <PhoneFrame>
+      <Routes>
+        <Route path="/" element={<HomePage/>} />
+        <Route path="/search" element={<SearchPage/>} />
+        <Route path="/titles/:id" element={<TitleDetailPage/>} />
+      </Routes>
+    </PhoneFrame>
+    ```
+    이유: 딥링크 가능, 뒤로가기 버튼 자연 지원, 각 화면이 자기 상태/스크롤/API 호출을 독립 관리. 비노출 요소(원본 HTML 의 공유/하트 아이콘 등)는 포팅 단계에서 **데이터는 살려두고 DOM 만 제거** — v2 토글 가능하도록 설계.

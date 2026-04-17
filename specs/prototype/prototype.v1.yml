@@ -1,0 +1,690 @@
+## -------------------------------------------------------
+## Prototype (Moyza) — 기능 명세 (v1)
+## 원본: spec-requests/prototype/prototype.v1.md
+## 자료: spec-requests/prototype/프로토타입_ux.pdf
+##       spec-requests/prototype/prototype_claude.html
+## -------------------------------------------------------
+
+project:
+  id: prototype
+  name: Moyza 프로토타입
+  description: 모바일 OTT/드라마·영화 탐색 및 리뷰 앱 (사용자 모바일 + 관리자 설정 페이지)
+  version: 1
+
+  modules:
+    frontend:
+      - key: user
+        port: 5177
+        template: custom
+        ui_source: spec-requests/prototype/prototype_claude.html
+        proxy_target: user
+      - key: admin
+        port: 5178
+        template: admin
+        proxy_target: admin
+
+    backend:
+      strategy: split
+      apps:
+        - { key: user,  port: 8082, role_scope: [USER, ADMIN] }
+        - { key: admin, port: 8083, role_scope: [ADMIN] }
+
+    database:
+      strategy: shared
+      shared_owner: user
+
+  database:
+    name: prototypedb
+
+## -------------------------------------------------------
+## 0. 파일 업로드 정책 (harness/files.md 재정의)
+## -------------------------------------------------------
+files:
+  max_size_mb: 10
+  allowed_mime: ["image/png", "image/jpeg", "image/webp"]
+  upload_auth: true           # 로그인 필수 (관리자 업로드 전제)
+  download_auth: false        # 공개 다운로드
+
+## -------------------------------------------------------
+## 1. changelog
+## -------------------------------------------------------
+changelog:
+  - version: 1
+    date: 2026-04-17
+    generation: 신규 생성
+    changes:
+      - 초기 버전 (Case 3: split backend + shared DB)
+      - 사용자 프론트: 모바일 전용 custom UI (ui_source=prototype_claude.html)
+      - 관리자 프론트: admin 템플릿 (Sidebar + Topbar)
+      - 공통 코드 3그룹 seed (COUNTRY, GENRE, PLATFORM)
+      - 홈 섹션 3개 seed (NEW_RELEASE, TRENDS, KOREA_PICK) — 자동 로직, 관리자는 is_visible 만 제어
+      - 배너/작품/배우/사이트 설정 CRUD
+      - 파일 업로드 공통 (StoredFile 자동 주입)
+
+## -------------------------------------------------------
+## 2. 엔티티
+## -------------------------------------------------------
+##
+## 주의:
+##   - StoredFile, CodeGroup, CodeItem 은 공통 하네스 규칙에 의해 자동 주입 (명시하지 않음)
+##     * harness/files.md, harness/common-code.md 참조
+##   - split backend + shared DB 이므로 모든 엔티티는 양쪽 백엔드에 동일 복제 생성됨
+##
+entities:
+
+  Member:
+    table: member
+    description: 로그인 계정 (v1 은 관리자만 사용)
+    fields:
+      - { name: member_id,    type: Long,      pk: true, auto: true }
+      - { name: login_id,     type: String,    required: true, unique: true, label: 아이디 }
+      - { name: password,     type: String,    required: true, min: 8, label: 비밀번호 }
+      - { name: member_name,  type: String,    required: true, label: 이름 }
+      - { name: role,         type: Enum,      enum: Role, required: true, default: USER, label: 권한 }
+      - { name: created_at,   type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,   type: Timestamp, auto: true, audit: true }
+    enums:
+      Role: [USER, ADMIN]
+    validations:
+      - { field: login_id, rule: unique,   message: 이미 사용 중인 아이디입니다 }
+      - { field: password, rule: "min:8",  message: 비밀번호는 8자리 이상이어야 합니다 }
+
+  Section:
+    table: section
+    description: 홈 섹션 (seed 고정 3건, 관리자는 is_visible 만 제어)
+    fields:
+      - { name: section_id,       type: Long,      pk: true, auto: true }
+      - { name: section_key,      type: String,    required: true, unique: true, label: 섹션 키 }
+      - { name: display_name_ko,  type: String,    required: true, label: 한글명 }
+      - { name: display_name_en,  type: String,    required: true, label: 영문명 }
+      - { name: sub_label,        type: String,    required: false, label: 부제 }
+      - { name: sort_order,       type: Integer,   required: true, default: 0, label: 노출 순서 }
+      - { name: is_visible,       type: Boolean,   required: true, default: true, label: 노출 여부 }
+      - { name: max_count,        type: Integer,   required: true, default: 20, label: 최대 노출 수 }
+      - { name: created_at,       type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,       type: Timestamp, auto: true, audit: true }
+    business_rules:
+      - section_key 로 구분되는 3가지 자동 로직 (NEW_RELEASE / TRENDS / KOREA_PICK)
+      - 관리자는 is_visible 만 실질적으로 조작 (sort_order·max_count 도 수정 가능하나 UI 에서는 기본 숨김)
+      - 섹션 자체의 추가/삭제 불가 — seed 로만 생성
+
+  Banner:
+    table: banner
+    description: 홈 + 작품 상세 공용 배너
+    fields:
+      - { name: banner_id,     type: Long,      pk: true, auto: true }
+      - { name: image_file_id, type: Long,      fk: StoredFile, required: true, label: 배너 이미지 }
+      - { name: link_url,      type: String,    required: true, label: 링크 URL }
+      - { name: sort_order,    type: Integer,   required: true, default: 0, label: 노출 순서 }
+      - { name: is_visible,    type: Boolean,   required: true, default: true, label: 노출 여부 }
+      - { name: created_at,    type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,    type: Timestamp, auto: true, audit: true }
+    business_rules:
+      - 사용자 화면 노출 규칙 — is_visible=true ORDER BY sort_order ASC LIMIT 5
+      - 홈과 작품 상세에서 동일 리스트 공유
+
+  SiteSetting:
+    table: site_setting
+    description: 사이트 단일 설정 (singleton, site_setting_id = 1 고정)
+    fields:
+      - { name: site_setting_id,   type: Long,      pk: true, auto: true }
+      - { name: logo_file_id,      type: Long,      fk: StoredFile, required: false, label: 로고 이미지 }
+      - { name: board_survey_url,  type: String,    required: false, label: Board 설문 URL }
+      - { name: created_at,        type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,        type: Timestamp, auto: true, audit: true }
+    business_rules:
+      - 단일 레코드만 존재 (seed 시 site_setting_id=1 삽입)
+      - 관리자 수정만 가능, 삭제 불가
+
+  Title:
+    table: title
+    description: 작품 (드라마/영화)
+    fields:
+      - { name: title_id,          type: Long,      pk: true, auto: true }
+      - { name: title_name_ko,     type: String,    required: true, label: 한글 제목 }
+      - { name: title_name_en,     type: String,    required: false, label: 영문 제목 }
+      - { name: poster_file_id,    type: Long,      fk: StoredFile, required: false, label: 포스터 썸네일 }
+      - { name: backdrop_file_id,  type: Long,      fk: StoredFile, required: false, label: 상세 히어로 이미지 }
+      - { name: country_code_id,   type: Long,      fk: CodeItem, required: true, code_group: COUNTRY, label: 국가 }
+      - { name: release_year,      type: Integer,   required: false, label: 출시 연도 }
+      - { name: episode_count,     type: Integer,   required: false, label: 에피소드 수 }
+      - { name: age_rating,        type: String,    required: false, label: 연령 등급 }
+      - { name: rating,            type: Decimal,   precision: 2, scale: 1, required: false, label: 별점 }
+      - { name: review_count,      type: Integer,   required: true, default: 0, label: 리뷰 수 }
+      - { name: synopsis,          type: Text,      required: false, label: 시놉시스 }
+      - { name: watch_now_url,     type: String,    required: false, label: Watch Now URL }
+      - { name: is_active,         type: Boolean,   required: true, default: true, label: 노출 여부 }
+      - { name: created_at,        type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,        type: Timestamp, auto: true, audit: true }
+    business_rules:
+      - 사용자 화면 (홈/탐색/상세) 은 is_active=true 만 조회
+      - rating, review_count 는 관리자 수동 입력 (v1 에는 리뷰 기능 없음)
+      - watch_now_url 비어있으면 Watch Now 버튼 비활성화
+
+  TitleGenre:
+    table: title_genre
+    description: 작품-장르 다대다 매핑 (장르는 공통 코드 GENRE 그룹)
+    fields:
+      - { name: title_genre_id, type: Long,      pk: true, auto: true }
+      - { name: title_id,       type: Long,      fk: Title, required: true }
+      - { name: genre_code_id,  type: Long,      fk: CodeItem, required: true, code_group: GENRE, label: 장르 }
+      - { name: sort_order,     type: Integer,   required: true, default: 0, label: 정렬 순서 }
+      - { name: created_at,     type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,     type: Timestamp, auto: true, audit: true }
+    unique: [[title_id, genre_code_id]]
+    business_rules:
+      - 카드/상세 메타칩의 "대표 장르" 는 sort_order=0 인 항목의 name_ko
+
+  TitlePlatform:
+    table: title_platform
+    description: 작품-플랫폼 다대다 매핑 (플랫폼별 시청 URL 포함)
+    fields:
+      - { name: title_platform_id, type: Long,      pk: true, auto: true }
+      - { name: title_id,          type: Long,      fk: Title, required: true }
+      - { name: platform_code_id,  type: Long,      fk: CodeItem, required: true, code_group: PLATFORM, label: 플랫폼 }
+      - { name: watch_url,         type: String,    required: true, label: 시청 URL }
+      - { name: sort_order,        type: Integer,   required: true, default: 0, label: 정렬 순서 }
+      - { name: created_at,        type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,        type: Timestamp, auto: true, audit: true }
+    unique: [[title_id, platform_code_id]]
+    business_rules:
+      - 작품 상세의 플랫폼 바는 이 매핑이 있는 플랫폼만 노출 (없으면 자연 숨김)
+
+  TitleSimilar:
+    table: title_similar
+    description: 작품-유사작 다대다 매핑 (관리자 수동 지정)
+    fields:
+      - { name: title_similar_id,  type: Long,      pk: true, auto: true }
+      - { name: title_id,          type: Long,      fk: Title, required: true }
+      - { name: similar_title_id,  type: Long,      fk: Title, required: true }
+      - { name: sort_order,        type: Integer,   required: true, default: 0, label: 정렬 순서 }
+      - { name: created_at,        type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,        type: Timestamp, auto: true, audit: true }
+    unique: [[title_id, similar_title_id]]
+    validations:
+      - { rule: "title_id != similar_title_id", message: 자기 자신은 유사작으로 지정할 수 없습니다 }
+
+  Cast:
+    table: cast_member                  # "cast" 는 SQL 예약어 — 테이블명은 cast_member 로 회피 (엔티티 클래스명은 Cast 유지)
+    description: 배우 마스터 (관리자 CRUD)
+    fields:
+      - { name: cast_id,         type: Long,      pk: true, auto: true }
+      - { name: cast_name_ko,    type: String,    required: true, label: 한글 이름 }
+      - { name: cast_name_en,    type: String,    required: false, label: 영문 이름 }
+      - { name: profile_file_id, type: Long,      fk: StoredFile, required: false, label: 프로필 이미지 }
+      - { name: is_active,       type: Boolean,   required: true, default: true, label: 활성 여부 }
+      - { name: created_at,      type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,      type: Timestamp, auto: true, audit: true }
+    business_rules:
+      - 여러 작품에 재사용 가능 (TitleCast 매핑)
+      - profile_file_id 는 관리자 등록, v1 사용자 화면 비노출
+
+  TitleCast:
+    table: title_cast
+    description: 작품-배우 매핑 + 역할 라벨
+    fields:
+      - { name: title_cast_id, type: Long,      pk: true, auto: true }
+      - { name: title_id,      type: Long,      fk: Title, required: true }
+      - { name: cast_id,       type: Long,      fk: Cast, required: true }
+      - { name: role_label,    type: String,    required: false, label: 역할 }
+      - { name: sort_order,    type: Integer,   required: true, default: 0, label: 정렬 순서 }
+      - { name: created_at,    type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,    type: Timestamp, auto: true, audit: true }
+    unique: [[title_id, cast_id]]
+    business_rules:
+      - role_label 은 DB 저장 + v1 사용자 화면 비노출 (나중에 노출 토글 가능)
+
+## -------------------------------------------------------
+## 3. seed_data (재생성 시 복원될 초기 데이터)
+## -------------------------------------------------------
+seed_data:
+
+  Member:
+    - { login_id: admin, password: admin123, member_name: 관리자, role: ADMIN }
+
+  Section:
+    - { section_key: NEW_RELEASE, display_name_ko: 업데이트 신작, display_name_en: New Releases,  sub_label: "What's new on Moyza",          sort_order: 10, is_visible: true, max_count: 20 }
+    - { section_key: TRENDS,      display_name_ko: 인기작 픽,    display_name_en: Trends,        sub_label: "What's popular right now",    sort_order: 20, is_visible: true, max_count: 20 }
+    - { section_key: KOREA_PICK,  display_name_ko: 코리아 픽,    display_name_en: From Korea,    sub_label: "From Korea",                  sort_order: 30, is_visible: true, max_count: 20 }
+
+  SiteSetting:
+    - { site_setting_id: 1, logo_file_id: null, board_survey_url: null }
+
+  CodeGroup:
+    - { group_key: COUNTRY,  group_name_ko: 국가,    group_name_en: Country,  is_system: true, sort_order: 10 }
+    - { group_key: GENRE,    group_name_ko: 장르,    group_name_en: Genre,    is_system: true, sort_order: 20 }
+    - { group_key: PLATFORM, group_name_ko: 플랫폼,  group_name_en: Platform, is_system: true, sort_order: 30 }
+
+  CodeItem:
+    # COUNTRY
+    - { group_key: COUNTRY,  item_key: KR,        name_ko: 한국,       name_en: Korea,   sort_order: 1 }
+    - { group_key: COUNTRY,  item_key: US,        name_ko: 미국,       name_en: USA,     sort_order: 2 }
+    - { group_key: COUNTRY,  item_key: CN,        name_ko: 중국,       name_en: China,   sort_order: 3 }
+    - { group_key: COUNTRY,  item_key: JP,        name_ko: 일본,       name_en: Japan,   sort_order: 4 }
+    # GENRE
+    - { group_key: GENRE,    item_key: ROMANCE,   name_ko: 로맨스,     name_en: Romance, sort_order: 1 }
+    - { group_key: GENRE,    item_key: HORROR,    name_ko: 공포,       name_en: Horror,  sort_order: 2 }
+    - { group_key: GENRE,    item_key: ACTION,    name_ko: 액션,       name_en: Action,  sort_order: 3 }
+    - { group_key: GENRE,    item_key: COMEDY,    name_ko: 코미디,     name_en: Comedy,  sort_order: 4 }
+    - { group_key: GENRE,    item_key: BL,        name_ko: B/L,        name_en: B/L,     sort_order: 5 }
+    - { group_key: GENRE,    item_key: DRAMA,     name_ko: 드라마,     name_en: Drama,   sort_order: 6 }
+    # PLATFORM
+    - { group_key: PLATFORM, item_key: NETFLIX,   name_ko: 넷플릭스,   name_en: NETFLIX,      sort_order: 1 }
+    - { group_key: PLATFORM, item_key: TVING,     name_ko: 티빙,       name_en: TVING,        sort_order: 2 }
+    - { group_key: PLATFORM, item_key: COUPANG,   name_ko: 쿠팡플레이, name_en: Coupang Play, sort_order: 3 }
+
+## -------------------------------------------------------
+## 4. API
+## -------------------------------------------------------
+apis:
+
+  # ============ USER 모듈 (/api/...) ============
+
+  # 홈 전체 묶음 — 배너 + 섹션 3종 + siteSetting
+  - { method: GET,  path: /api/home,                entity: Section,  action: custom, auth: false, module: user, description: "홈 전체 데이터 (배너 + 섹션 3종 + siteSetting)" }
+
+  # 작품 목록 (탐색/필터)
+  - { method: GET,  path: /api/titles,              entity: Title,    action: list,   auth: false, module: user, description: "작품 검색/필터 목록 (q, countryKeys[], genreKeys[], platformKeys[], sort=latest|rating, page, size)" }
+
+  # 작품 상세 (genre/platform/similar/cast 포함)
+  - { method: GET,  path: /api/titles/{id},         entity: Title,    action: detail, auth: false, module: user, description: 작품 상세 조회 }
+
+  # ============ ADMIN 모듈 (/api/admin/...) ============
+
+  # --- 인증 (/api/admin/auth/** 만 비인증 허용, 그 외 모든 admin API 는 로그인 필수) ---
+  - { method: POST, path: /api/admin/auth/signup,    entity: Member, action: create, auth: false, module: admin, description: "관리자 회원가입 (role=ADMIN 자동 부여)" }
+  - { method: GET,  path: /api/admin/auth/check-id/{loginId}, entity: Member, action: custom, auth: false, module: admin, description: 아이디 중복 확인 }
+  - { method: POST, path: /api/admin/auth/login,     entity: Member, action: custom, auth: false, module: admin, description: 관리자 로그인 }
+  - { method: POST, path: /api/admin/auth/logout,    entity: Member, action: custom, auth: true,  module: admin, description: 로그아웃 }
+  - { method: GET,  path: /api/admin/auth/me,        entity: Member, action: custom, auth: true,  module: admin, description: 내 세션 조회 }
+
+  # --- 사이트 설정 ---
+  - { method: GET,  path: /api/admin/site-setting,  entity: SiteSetting, action: detail, auth: true,  module: admin, role: ADMIN, description: 사이트 설정 조회 }
+  - { method: PUT,  path: /api/admin/site-setting,  entity: SiteSetting, action: update, auth: true,  module: admin, role: ADMIN, description: 사이트 설정 수정 }
+
+  # --- 배너 ---
+  - { method: GET,    path: /api/admin/banners,           entity: Banner, action: list,   auth: true, module: admin, role: ADMIN, description: 배너 목록 }
+  - { method: GET,    path: /api/admin/banners/{id},      entity: Banner, action: detail, auth: true, module: admin, role: ADMIN, description: 배너 상세 }
+  - { method: POST,   path: /api/admin/banners,           entity: Banner, action: create, auth: true, module: admin, role: ADMIN, description: 배너 생성 }
+  - { method: PUT,    path: /api/admin/banners/{id},      entity: Banner, action: update, auth: true, module: admin, role: ADMIN, description: 배너 수정 }
+  - { method: DELETE, path: /api/admin/banners/{id},      entity: Banner, action: delete, auth: true, module: admin, role: ADMIN, description: 배너 삭제 }
+
+  # --- 섹션 노출 관리 ---
+  - { method: GET,    path: /api/admin/sections,          entity: Section, action: list,   auth: true, module: admin, role: ADMIN, description: 섹션 목록 }
+  - { method: PUT,    path: /api/admin/sections/{id},     entity: Section, action: update, auth: true, module: admin, role: ADMIN, description: "섹션 수정 (is_visible, sort_order, max_count)" }
+
+  # --- 작품 ---
+  - { method: GET,    path: /api/admin/titles,            entity: Title, action: list,   auth: true, module: admin, role: ADMIN, description: 작품 목록 (관리자) }
+  - { method: GET,    path: /api/admin/titles/{id},       entity: Title, action: detail, auth: true, module: admin, role: ADMIN, description: 작품 상세 (관리자) }
+  - { method: POST,   path: /api/admin/titles,            entity: Title, action: create, auth: true, module: admin, role: ADMIN, description: 작품 생성 }
+  - { method: PUT,    path: /api/admin/titles/{id},       entity: Title, action: update, auth: true, module: admin, role: ADMIN, description: 작품 수정 }
+  - { method: DELETE, path: /api/admin/titles/{id},       entity: Title, action: delete, auth: true, module: admin, role: ADMIN, description: 작품 삭제 }
+
+  # 작품의 매핑 일괄 갱신 (기존 매핑 삭제 후 재생성 패턴)
+  - { method: POST,   path: /api/admin/titles/{id}/genres,    entity: TitleGenre,    action: custom, auth: true, module: admin, role: ADMIN, description: "작품 장르 매핑 일괄 갱신" }
+  - { method: POST,   path: /api/admin/titles/{id}/platforms, entity: TitlePlatform, action: custom, auth: true, module: admin, role: ADMIN, description: "작품 플랫폼 매핑 일괄 갱신 (각 watch_url 포함)" }
+  - { method: POST,   path: /api/admin/titles/{id}/similar,   entity: TitleSimilar,  action: custom, auth: true, module: admin, role: ADMIN, description: "작품 유사작 매핑 일괄 갱신" }
+  - { method: POST,   path: /api/admin/titles/{id}/cast,      entity: TitleCast,     action: custom, auth: true, module: admin, role: ADMIN, description: "작품 배우 매핑 일괄 갱신 (role_label 포함)" }
+
+  # --- 배우 ---
+  - { method: GET,    path: /api/admin/casts,             entity: Cast, action: list,   auth: true, module: admin, role: ADMIN, description: 배우 목록 }
+  - { method: GET,    path: /api/admin/casts/{id},        entity: Cast, action: detail, auth: true, module: admin, role: ADMIN, description: 배우 상세 }
+  - { method: POST,   path: /api/admin/casts,             entity: Cast, action: create, auth: true, module: admin, role: ADMIN, description: 배우 생성 }
+  - { method: PUT,    path: /api/admin/casts/{id},        entity: Cast, action: update, auth: true, module: admin, role: ADMIN, description: 배우 수정 }
+  - { method: DELETE, path: /api/admin/casts/{id},        entity: Cast, action: delete, auth: true, module: admin, role: ADMIN, description: "배우 삭제 (TitleCast 참조 없을 때만)" }
+
+  # (공통 자동 API — 생성기가 주입하므로 명시 생략)
+  # - GET /api/codes/{groupKey}
+  # - GET /api/admin/code-groups, /api/admin/code-items ... (CRUD)
+  # - POST /api/files, GET /api/files/{fileKey}
+
+## -------------------------------------------------------
+## 5. 페이지
+## -------------------------------------------------------
+pages:
+
+  # ============ USER 모듈 (모바일) ============
+
+  - name: 홈
+    path: /
+    auth: false
+    module: user
+    nav: true
+    nav_order: 10
+    api: [GET /api/home]
+    description: "로고 + 검색 + 배너 캐러셀(최대 5) + 섹션 3종 (노출된 것만). 하단 네비: Home/Event/Board"
+
+  - name: 탐색
+    path: /search
+    auth: false
+    module: user
+    nav: true
+    nav_order: 20
+    api: [GET /api/titles, GET /api/codes/COUNTRY, GET /api/codes/GENRE, GET /api/codes/PLATFORM]
+    description: "키워드 검색 + Country/Genre/Platform 필터 + 정렬(최신/평점) + 그리드 결과"
+
+  - name: Board
+    path: /board
+    auth: false
+    module: user
+    nav: true
+    nav_order: 30
+    description: "SiteSetting.board_survey_url 외부 링크로 리다이렉트 (또는 새 창) — 전용 페이지 렌더링 없음"
+
+  - name: 작품 상세
+    path: /titles/:id
+    auth: false
+    module: user
+    nav: false
+    api: [GET /api/titles/{id}]
+    description: "히어로(backdrop) + 제목/별점 + 탭(Synopsis/Cast/Similar) + 중간 배너 + 하단 Watch Now"
+
+  # ============ ADMIN 모듈 ============
+
+  - name: 로그인
+    path: /login
+    auth: false
+    module: admin
+    nav: false
+    show_when: logged_out
+    api: [POST /api/admin/auth/login]
+    form_fields:
+      - { field: login_id, label: 아이디,   type: text,     required: true }
+      - { field: password, label: 비밀번호, type: password, required: true }
+    error_display: alert
+    description: "비로그인 접근 경로. 하단에 회원가입 링크 (/signup)"
+
+  - name: 회원가입
+    path: /signup
+    auth: false
+    module: admin
+    nav: false
+    show_when: logged_out
+    api: [POST /api/admin/auth/signup, GET /api/admin/auth/check-id/{loginId}]
+    form_fields:
+      - { field: login_id,         label: 아이디,        type: text,     required: true, inline_action: 중복확인 }
+      - { field: member_name,      label: 이름,          type: text,     required: true }
+      - { field: password,         label: 비밀번호,      type: password, required: true, placeholder: "8자리 이상" }
+      - { field: password_confirm, label: 비밀번호 확인, type: password, required: true }
+    description: "관리자 회원가입. 성공 시 자동 로그인 + 대시보드 이동"
+
+  - name: 대시보드
+    path: /
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: true
+    nav_group: 운영
+    nav_order: 10
+    description: "간단한 현황 카드 (작품 수, 배너 수, 최근 생성 작품 5건 등). v1 은 단순 환영 페이지도 허용"
+
+  - name: 배너 관리
+    path: /banners
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: true
+    nav_group: 컨텐츠
+    nav_order: 20
+    api: [GET /api/admin/banners, DELETE /api/admin/banners/{id}]
+    display_fields:
+      - { field: image_file_id, label: 이미지 }
+      - { field: link_url,      label: 링크 }
+      - { field: sort_order,    label: 순서 }
+      - { field: is_visible,    label: 노출 }
+
+  - name: 배너 등록
+    path: /banners/new
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: false
+    api: [POST /api/admin/banners, POST /api/files]
+    form_fields:
+      - { field: image_file_id, label: 배너 이미지, type: file,     required: true, accept: "image/*" }
+      - { field: link_url,      label: 링크 URL,    type: text,     required: true }
+      - { field: sort_order,    label: 순서,        type: number,   required: true }
+      - { field: is_visible,    label: 노출 여부,   type: checkbox, required: true, default: true }
+
+  - name: 배너 수정
+    path: /banners/:id
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: false
+    api: [GET /api/admin/banners/{id}, PUT /api/admin/banners/{id}, POST /api/files]
+    form_fields:
+      - { field: image_file_id, label: 배너 이미지, type: file,     required: true, accept: "image/*" }
+      - { field: link_url,      label: 링크 URL,    type: text,     required: true }
+      - { field: sort_order,    label: 순서,        type: number,   required: true }
+      - { field: is_visible,    label: 노출 여부,   type: checkbox, required: true }
+
+  - name: 섹션 노출 관리
+    path: /sections
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: true
+    nav_group: 컨텐츠
+    nav_order: 30
+    api: [GET /api/admin/sections, PUT /api/admin/sections/{id}]
+    description: "섹션 3건 (NEW_RELEASE / TRENDS / KOREA_PICK) 의 is_visible 토글 + sort_order / max_count 조정"
+    display_fields:
+      - { field: display_name_ko, label: 섹션명 }
+      - { field: section_key,     label: 섹션 키 }
+      - { field: is_visible,      label: 노출 }
+      - { field: sort_order,      label: 순서 }
+      - { field: max_count,       label: 최대 노출 수 }
+
+  - name: 작품 목록
+    path: /titles
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: true
+    nav_group: 컨텐츠
+    nav_order: 40
+    api: [GET /api/admin/titles, DELETE /api/admin/titles/{id}]
+    display_fields:
+      - { field: poster_file_id,  label: 썸네일 }
+      - { field: title_name_ko,   label: 제목 }
+      - { field: country_code_id, label: 국가 }
+      - { field: release_year,    label: 연도 }
+      - { field: rating,          label: 별점 }
+      - { field: is_active,       label: 노출 }
+
+  - name: 작품 등록
+    path: /titles/new
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: false
+    api:
+      - POST /api/admin/titles
+      - POST /api/admin/titles/{id}/genres
+      - POST /api/admin/titles/{id}/platforms
+      - POST /api/admin/titles/{id}/similar
+      - POST /api/admin/titles/{id}/cast
+      - POST /api/files
+      - GET /api/codes/COUNTRY
+      - GET /api/codes/GENRE
+      - GET /api/codes/PLATFORM
+      - GET /api/admin/casts
+    form_fields:
+      - { field: title_name_ko,    label: 한글 제목,       type: text,     required: true }
+      - { field: title_name_en,    label: 영문 제목,       type: text,     required: false }
+      - { field: poster_file_id,   label: 썸네일,          type: file,     required: false, accept: "image/*" }
+      - { field: backdrop_file_id, label: 상세 이미지,     type: file,     required: false, accept: "image/*" }
+      - { field: country_code_id,  label: 국가,            type: select,   required: true,  source: "GET /api/codes/COUNTRY" }
+      - { field: release_year,     label: 출시 연도,       type: number,   required: false }
+      - { field: episode_count,    label: 에피소드 수,     type: number,   required: false }
+      - { field: age_rating,       label: 연령 등급,       type: text,     required: false,  placeholder: "19+, ALL 등" }
+      - { field: rating,           label: 별점,            type: number,   required: false,  step: 0.1, min: 0, max: 5 }
+      - { field: review_count,     label: 리뷰 수,         type: number,   required: true,   default: 0 }
+      - { field: synopsis,         label: 시놉시스,        type: textarea, required: false }
+      - { field: watch_now_url,    label: Watch Now URL,   type: text,     required: false }
+      - { field: is_active,        label: 노출 여부,       type: checkbox, required: true,   default: true }
+      # 매핑 (일괄 갱신 API 로 처리)
+      - { field: genres,           label: 장르,            type: multi_select, required: false, source: "GET /api/codes/GENRE", note: "순서 지정 = 대표 장르는 맨 앞" }
+      - { field: platforms,        label: 플랫폼 + 링크,   type: platform_list, required: false, source: "GET /api/codes/PLATFORM", note: "플랫폼별 watch_url 입력" }
+      - { field: similar_titles,   label: 유사 작품,       type: title_picker,  required: false }
+      - { field: cast_members,     label: 배우 + 역할,     type: cast_picker,   required: false, source: "GET /api/admin/casts", note: "배우 선택 + role_label 입력" }
+
+  - name: 작품 수정
+    path: /titles/:id
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: false
+    api:
+      - GET /api/admin/titles/{id}
+      - PUT /api/admin/titles/{id}
+      - POST /api/admin/titles/{id}/genres
+      - POST /api/admin/titles/{id}/platforms
+      - POST /api/admin/titles/{id}/similar
+      - POST /api/admin/titles/{id}/cast
+      - POST /api/files
+      - GET /api/codes/COUNTRY
+      - GET /api/codes/GENRE
+      - GET /api/codes/PLATFORM
+      - GET /api/admin/casts
+    description: "작품 등록 폼과 동일한 필드 구성. 로드 시 기존 매핑 프리필"
+
+  - name: 배우 목록
+    path: /casts
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: true
+    nav_group: 컨텐츠
+    nav_order: 50
+    api: [GET /api/admin/casts, DELETE /api/admin/casts/{id}]
+    display_fields:
+      - { field: profile_file_id, label: 프로필 }
+      - { field: cast_name_ko,    label: 한글명 }
+      - { field: cast_name_en,    label: 영문명 }
+      - { field: is_active,       label: 활성 }
+
+  - name: 배우 등록
+    path: /casts/new
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: false
+    api: [POST /api/admin/casts, POST /api/files]
+    form_fields:
+      - { field: cast_name_ko,    label: 한글 이름,   type: text,     required: true }
+      - { field: cast_name_en,    label: 영문 이름,   type: text,     required: false }
+      - { field: profile_file_id, label: 프로필 이미지, type: file,   required: false, accept: "image/*" }
+      - { field: is_active,       label: 활성 여부,   type: checkbox, required: true, default: true }
+
+  - name: 배우 수정
+    path: /casts/:id
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: false
+    api: [GET /api/admin/casts/{id}, PUT /api/admin/casts/{id}, POST /api/files]
+    form_fields:
+      - { field: cast_name_ko,    label: 한글 이름,     type: text,     required: true }
+      - { field: cast_name_en,    label: 영문 이름,     type: text,     required: false }
+      - { field: profile_file_id, label: 프로필 이미지, type: file,     required: false, accept: "image/*" }
+      - { field: is_active,       label: 활성 여부,     type: checkbox, required: true }
+
+  - name: 공통 코드 관리
+    path: /codes
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: true
+    nav_group: 시스템
+    nav_order: 90
+    api: [GET /api/admin/code-groups, GET /api/admin/code-items, POST /api/admin/code-items, PUT /api/admin/code-items/{id}, DELETE /api/admin/code-items/{id}]
+    description: "CodeGroup 목록 + 선택 그룹의 CodeItem CRUD. is_system=true 그룹은 그룹 자체 삭제 불가"
+
+  - name: 사이트 설정
+    path: /settings
+    auth: true
+    module: admin
+    role: ADMIN
+    nav: true
+    nav_group: 시스템
+    nav_order: 99
+    api: [GET /api/admin/site-setting, PUT /api/admin/site-setting, POST /api/files]
+    form_fields:
+      - { field: logo_file_id,     label: 로고 이미지,      type: file, required: false, accept: "image/*" }
+      - { field: board_survey_url, label: Board 설문 URL,   type: text, required: false }
+
+## -------------------------------------------------------
+## 6. 권한
+## -------------------------------------------------------
+auth:
+  method: session
+  roles: [USER, ADMIN]
+  user:
+    public_pages: [/, /search, /board, "/titles/:id"]
+    protected_pages: []
+    rule: "v1 은 사용자 로그인 없음. 모든 user 페이지 공개"
+  admin:
+    login_path: /login
+    public_pages: [/login, /signup]
+    protected_pages: ["/", /banners, /banners/new, "/banners/:id", /sections, /titles, /titles/new, "/titles/:id", /casts, /casts/new, "/casts/:id", /codes, /settings]
+    allowed_roles: [ADMIN]
+    rule: "비로그인 상태에서는 /login, /signup 만 접근. 그 외 경로 접근 시 /login 으로 리다이렉트. role != ADMIN 이어도 동일"
+
+## -------------------------------------------------------
+## 7. 핵심 비즈니스 로직 요약
+## -------------------------------------------------------
+business_rules:
+
+  # --- 홈 섹션 자동 로직 (Service 하드코딩) ---
+  - "NEW_RELEASE 섹션: Title.is_active=true ORDER BY created_at DESC LIMIT max_count"
+  - "TRENDS 섹션: Title.is_active=true ORDER BY rating DESC NULLS LAST, created_at DESC LIMIT max_count"
+  - "KOREA_PICK 섹션: Title.is_active=true AND country_code.item_key='KR' ORDER BY created_at DESC LIMIT max_count"
+  - "홈 응답에는 Section.is_visible=true 인 섹션만 포함"
+
+  # --- 배너 ---
+  - "배너는 Banner.is_visible=true ORDER BY sort_order ASC LIMIT 5 로 노출"
+  - "홈과 작품 상세에서 동일 배너 리스트 공유"
+
+  # --- 작품 ---
+  - "사용자 화면에서 Title.is_active=false 작품은 노출하지 않음 (홈/탐색/상세 모두)"
+  - "작품 상세의 플랫폼 바는 TitlePlatform 매핑이 있는 플랫폼만 노출 (watch_url 필수)"
+  - "Watch Now 버튼은 Title.watch_now_url 이 있을 때만 활성 (없으면 비활성/숨김)"
+  - "카드·상세의 '대표 장르' 는 TitleGenre 의 sort_order=0 인 항목 기준"
+  - "rating, review_count 는 관리자 수동 입력 (v1 에는 리뷰 기능 없음)"
+
+  # --- 비노출 (데이터는 유지) ---
+  - "v1 사용자 화면 비노출 요소: 공유 아이콘, 하트 아이콘, Account 탭, Cast.role_label, Cast.profile_file_id"
+  - "위 항목들의 데이터 컬럼/필드는 유지 — v2 이후 노출 전환 가능"
+
+  # --- 파일 업로드 ---
+  - "업로드: 관리자 로그인 필수, 10MB 제한, image/png|jpeg|webp 만 허용"
+  - "디스크 저장 파일명은 {file_key} (확장자 없음). DB 의 ext/mime_type 으로만 원본 타입 복구"
+  - "다운로드 (GET /api/files/{fileKey}) 는 공개. Content-Type 은 DB 의 mime_type 사용"
+
+  # --- 공통 코드 ---
+  - "COUNTRY/GENRE/PLATFORM 은 is_system=true 그룹 — 그룹 삭제 불가, 아이템은 추가/수정/비활성 가능"
+  - "다른 엔티티가 FK CodeItem 을 참조할 때 Service 에서 code_group 힌트와 일치하는지 검증"
+
+  # --- admin 공통 컴포넌트 (harness/template-admin.md 준수) ---
+  - "admin 프론트는 src/components/common/ 공통 컴포넌트 세트를 사전 생성하고 모든 페이지에서 이를 통해서만 UI 조립"
+  - "리스트: DataTable + Toolbar + SearchFilter + Pagination 사용"
+  - "폼: FormSection + FormField + TextInput/TextareaInput/NumberInput/SelectBox/MultiSelectBox/Checkbox/Switch/DatePicker/FileUploader 사용"
+  - "공통 코드 선택: CodeSelect / CodeMultiSelect (groupKey 전달) 사용"
+  - "삭제 확인: ConfirmDialog(variant=danger) 사용. window.confirm 금지"
+  - "성공/실패 피드백: Toast(useToast) 사용. alert 금지"
+  - "상세/보조 입력 모달: Dialog 사용. 페이지 자체 모달 구현 금지"
+  - "user 프론트는 공통 컴포넌트 사전 생성하지 않음 (페이지별 자체 구성)"
+
+  # --- 권한 / 인증 ---
+  - "admin 백엔드는 /api/admin/auth/signup, /api/admin/auth/login, /api/admin/auth/check-id/** 만 비인증 허용. 그 외 모든 /api/** 는 로그인 필수"
+  - "admin 백엔드의 비인증 허용 엔드포인트를 제외한 모든 경로는 SessionRoleFilter 로 role=ADMIN 확인"
+  - "관리자 회원가입: POST /api/admin/auth/signup 호출 시 Member 생성 + role=ADMIN 자동 부여. 성공 시 세션 저장 + 응답에 me 정보"
+  - "관리자 회원가입 후 프론트는 대시보드(/)로 이동 (이미 세션이 생겼으므로 로그인 재요청 불필요)"
+  - "admin 프론트는 비로그인 상태에서 /login, /signup 만 접근 가능. 그 외 경로 접근 시 /login 으로 리다이렉트"
+  - "login_id 중복 확인: signup 페이지에서 GET /api/admin/auth/check-id/{loginId} 로 사전 확인"
+  - "user 백엔드 (port 8082) 는 role 체크 없음 (v1, 사용자 로그인 없음)"
+  - "admin 백엔드 CORS: http://localhost:5178 만 허용"
+  - "user 백엔드 CORS: http://localhost:5177 만 허용"
+  - "두 백엔드는 shared H2 DB 파일 공유 (AUTO_SERVER=TRUE). user 가 shared_owner → ddl-auto: update, admin → validate"

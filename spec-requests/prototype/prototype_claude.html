@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Moyza Prototype</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+    background: #05070b; color: #fff;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; }
+
+  /* ========= Phone Frame (desktop) ========= */
+  .viewport {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; padding: 40px 20px;
+    background: radial-gradient(ellipse at top, #1c2332 0%, #05070b 60%);
+  }
+  .phone {
+    position: relative;
+    width: 390px; height: 844px;
+    background: #0a0c10;
+    border-radius: 55px;
+    border: 12px solid #0f1117;
+    box-shadow: 0 0 0 2px #2a2d34, 0 30px 80px rgba(0,0,0,0.6);
+    overflow: hidden;
+  }
+  .phone::before {
+    content: ''; position: absolute;
+    top: 10px; left: 50%; transform: translateX(-50%);
+    width: 120px; height: 32px; background: #000;
+    border-radius: 20px; z-index: 200;
+  }
+  .phone::after {
+    content: ''; position: absolute;
+    bottom: 8px; left: 50%; transform: translateX(-50%);
+    width: 130px; height: 5px; background: #fff;
+    border-radius: 3px; z-index: 200; opacity: 0.8;
+  }
+  @media (max-width: 500px) {
+    .viewport { padding: 0; }
+    .phone { width: 100%; height: 100vh; border: none; border-radius: 0; }
+    .phone::before, .phone::after { display: none; }
+  }
+
+  /* ========= Status Bar ========= */
+  .status-bar {
+    position: absolute; top: 0; left: 0; right: 0;
+    height: 50px; padding: 0 28px 0 32px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 15px; font-weight: 600;
+    z-index: 100; pointer-events: none;
+  }
+  .status-right { display: flex; align-items: center; gap: 5px; }
+  .battery {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 1px 5px; border: 1px solid rgba(255,255,255,0.6);
+    border-radius: 4px; font-size: 10px; font-weight: 700;
+    margin-left: 2px; position: relative; min-width: 22px;
+  }
+  .battery::after {
+    content: ''; position: absolute; right: -3px; top: 4px;
+    width: 2px; height: 5px; background: rgba(255,255,255,0.6);
+    border-radius: 0 1px 1px 0;
+  }
+
+  /* ========= App container ========= */
+  .app {
+    position: absolute;
+    top: 50px; bottom: 0; left: 0; right: 0;
+    overflow: hidden;
+  }
+  .screen {
+    position: absolute; inset: 0;
+    background: #0a0c10;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    visibility: hidden; opacity: 0;
+    transition: opacity 0.25s ease;
+  }
+  .screen.active { visibility: visible; opacity: 1; }
+  .scroll-area {
+    flex: 1; min-height: 0;
+    overflow-y: auto; overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .scroll-area::-webkit-scrollbar { display: none; }
+
+  /* ========= Common components ========= */
+  .search-wrap { position: relative; }
+  .search-input {
+    width: 100%; height: 44px;
+    padding: 0 44px 0 16px;
+    background: #151923; border: 1px solid #1f242e;
+    border-radius: 12px; color: #fff; font-size: 14px;
+    outline: none;
+  }
+  .search-input::placeholder { color: #5a6170; }
+  .search-input[readonly] { cursor: pointer; }
+  .search-wrap .ico-search {
+    position: absolute; right: 14px; top: 50%;
+    transform: translateY(-50%); color: #5a6170;
+    pointer-events: none;
+  }
+  .icon-btn {
+    width: 36px; height: 36px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: transparent; border: none; color: #fff;
+    cursor: pointer;
+  }
+  .back-btn {
+    width: 36px; height: 36px; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: none; color: #3b9eff; cursor: pointer;
+  }
+
+  /* ========= Survey banner (reusable) ========= */
+  .survey-banner {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px;
+    margin: 0 20px 18px;
+    padding: 18px 18px;
+    background: linear-gradient(135deg, #2b9aff 0%, #4ab3ff 100%);
+    border-radius: 14px; color: #fff;
+    text-decoration: none; cursor: pointer;
+    box-shadow: 0 6px 20px rgba(43,154,255,0.15);
+  }
+  .survey-banner .sb-text strong {
+    display: block; font-size: 17px; font-weight: 700;
+    line-height: 1.35; letter-spacing: -0.2px;
+  }
+  .survey-banner .sb-coffee {
+    width: 70px; height: 56px; flex-shrink: 0;
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .sb-stamp {
+    position: absolute; right: -4px; bottom: -4px;
+    width: 34px; height: 34px;
+    background: #2a0e6a; color: #fff;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700;
+    text-align: center; line-height: 1.1;
+  }
+
+  /* ========= HOME screen ========= */
+  .home-content { padding-bottom: 20px; }
+  .home-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px 10px;
+  }
+  .logo {
+    font-size: 26px; font-weight: 700;
+    color: #3b9eff;
+    font-style: italic;
+    letter-spacing: -0.8px;
+    font-family: "Brush Script MT", "Segoe Script", cursive;
+  }
+  .home-search { padding: 4px 20px 16px; }
+
+  .section { padding: 6px 0 14px; }
+  .section-head {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    padding: 6px 20px 12px;
+  }
+  .section-head .sub {
+    font-size: 11px; color: #6a7180;
+    display: block; margin-bottom: 3px;
+  }
+  .section-head h3 { font-size: 19px; font-weight: 700; letter-spacing: -0.3px; }
+  .section-head .chev { color: #3b9eff; }
+
+  .h-scroll {
+    display: flex; gap: 10px;
+    padding: 0 20px 4px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+  .h-scroll::-webkit-scrollbar { display: none; }
+  .h-scroll { scrollbar-width: none; }
+
+  .card {
+    flex: 0 0 122px;
+    scroll-snap-align: start;
+    cursor: pointer;
+  }
+  .poster {
+    position: relative;
+    width: 122px; height: 172px;
+    border-radius: 10px; overflow: hidden;
+    background: #1f242e;
+  }
+  .poster .pl {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 800; font-size: 22px;
+    text-align: center; padding: 8px;
+    letter-spacing: -1px; line-height: 1.1;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  }
+  .poster .top-badge {
+    position: absolute; top: 0; left: 0;
+    background: #ff3b5c; color: #fff;
+    font-size: 10px; font-weight: 800;
+    padding: 3px 9px 4px;
+    border-radius: 0 0 8px 0; z-index: 2;
+    letter-spacing: 0.5px;
+  }
+  .card .title {
+    font-size: 13px; font-weight: 600;
+    margin-top: 9px; color: #fff;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .card .meta { font-size: 11px; color: #6a7180; margin-top: 3px; }
+  .card .rating {
+    font-size: 12px; color: #22c55e; margin-top: 3px;
+    font-weight: 700; display: flex; align-items: center; gap: 3px;
+  }
+
+  /* Poster theme gradients */
+  .p-akdong    { background: linear-gradient(135deg, #c13b3b 0%, #5a1818 100%); }
+  .p-romance   { background: linear-gradient(135deg, #b07bd9 0%, #593687 100%); }
+  .p-iconcare  { background: linear-gradient(135deg, #f0c05a 0%, #a87628 100%); }
+  .p-parttime  { background: linear-gradient(135deg, #5d9cec 0%, #2c5d9e 100%); }
+  .p-playlist  { background: linear-gradient(135deg, #6dc5e0 0%, #2a7590 100%); }
+  .p-nobbakku  { background: linear-gradient(135deg, #3a6a8e 0%, #0f3555 100%); }
+  .p-etween    { background: linear-gradient(135deg, #ff8e6f 0%, #c85a3b 100%); }
+
+  /* ========= Bottom Nav (3 tabs: Home / Event / Board) ========= */
+  .bottom-nav {
+    flex-shrink: 0;
+    background: rgba(10,12,16,0.95);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-top: 1px solid #151923;
+    padding: 10px 20px 26px;
+    display: flex; justify-content: space-around;
+    z-index: 50;
+  }
+  .nav-btn {
+    flex: 1;
+    background: none; border: none;
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    color: #6a7180; font-size: 11px; font-weight: 500;
+    cursor: pointer; padding: 6px 0;
+  }
+  .nav-btn.active { color: #fff; }
+  .nav-btn.active svg { color: #fff; }
+
+  /* ========= SEARCH screen ========= */
+  .search-header {
+    padding: 12px 16px 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .search-header .search-wrap { flex: 1; }
+
+  .filter { padding: 0 20px; }
+  .filter-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 0 10px;
+  }
+  .filter-head h3 { font-size: 18px; font-weight: 700; }
+  .filter-head .chev { color: #3b9eff; }
+  .filter-row {
+    display: grid;
+    grid-template-columns: 68px 1fr;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+  }
+  .filter-row .label { font-size: 13px; color: #8b94a3; }
+  .filter-row .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill {
+    padding: 5px 14px;
+    background: transparent;
+    border: 1px solid #2a3140;
+    border-radius: 20px;
+    color: #8b94a3;
+    font-size: 12px; font-weight: 500;
+    cursor: pointer;
+  }
+  .pill.active {
+    background: #3b9eff; border-color: #3b9eff;
+    color: #fff; font-weight: 600;
+  }
+
+  /* Platform: text-only per PDF */
+  .platform-text {
+    display: flex; gap: 14px; flex-wrap: wrap;
+    font-size: 13px; color: #8b94a3;
+    padding: 4px 0;
+  }
+  .platform-text span { cursor: pointer; }
+  .platform-text span.sel { color: #3b9eff; font-weight: 600; }
+
+  .results-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 20px 14px;
+  }
+  .results-head .count { font-size: 14px; font-weight: 600; }
+  .results-head .count strong { color: #3b9eff; }
+  .results-head .sort {
+    font-size: 13px; color: #8b94a3;
+    display: flex; align-items: center; gap: 4px; cursor: pointer;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px 10px;
+    padding: 0 20px 40px;
+  }
+  .grid .card { flex: none; }
+  .grid .poster { width: 100%; height: auto; aspect-ratio: 2 / 3; }
+  .grid .card .title {
+    font-size: 12px; margin-top: 6px; text-align: center;
+    white-space: normal; line-height: 1.3;
+  }
+
+  /* ========= DETAIL screen ========= */
+  .detail-content { padding-bottom: 20px; }
+
+  .hero {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1 / 1.05;
+    background:
+      radial-gradient(circle at 50% 35%, #d55572 0%, transparent 55%),
+      linear-gradient(180deg, #6a1a2a 0%, #2a0a14 60%, #0a0c10 100%);
+    overflow: hidden;
+  }
+  .hero::before {
+    /* Silhouette effect */
+    content: '';
+    position: absolute;
+    left: 50%; bottom: 30%;
+    transform: translateX(-50%);
+    width: 220px; height: 260px;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0.4) 0%, transparent 70%);
+  }
+  .hero::after {
+    content: ''; position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(0,0,0,0.25) 0%, transparent 30%, transparent 50%, rgba(10,12,16,0.95) 100%);
+  }
+  .hero-title {
+    position: absolute; bottom: 28px; left: 0; right: 0;
+    padding: 0 20px; text-align: center; z-index: 2;
+  }
+  .hero-title h1 {
+    font-size: 30px; font-weight: 800;
+    letter-spacing: -1px;
+    text-shadow: 0 2px 16px rgba(0,0,0,0.6);
+  }
+  .hero-title .rating {
+    font-size: 12px; color: #9ca3af;
+    margin-top: 8px;
+    display: flex; align-items: center; justify-content: center; gap: 4px;
+  }
+  .hero-title .rating .star { color: #22c55e; font-weight: 700; font-size: 14px; }
+
+  .detail-top-bar {
+    position: absolute; top: 0; left: 0; right: 0;
+    padding: 8px 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    z-index: 30;
+  }
+  .detail-top-bar .right { display: flex; gap: 2px; }
+  /* Share icon hidden per PDF — not rendered */
+
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid #1a1f2a;
+    background: #0a0c10;
+  }
+  .tab {
+    flex: 1; padding: 14px 0;
+    background: none; border: none;
+    color: #6a7180; font-size: 14px; font-weight: 600;
+    cursor: pointer; position: relative;
+  }
+  .tab.active { color: #fff; }
+  .tab.active::after {
+    content: ''; position: absolute;
+    bottom: -1px; left: 25%; right: 25%;
+    height: 2px; background: #fff;
+  }
+
+  .accordion { border-bottom: 1px solid #151923; }
+  .acc-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 20px 14px;
+    background: none; border: none; width: 100%;
+    color: #fff; cursor: pointer;
+  }
+  .acc-head h3 { font-size: 16px; font-weight: 700; }
+  .acc-head .chev { color: #3b9eff; transition: transform 0.2s; }
+  .accordion.closed .acc-head .chev { transform: rotate(180deg); }
+  .acc-body { padding: 0 20px 20px; overflow: hidden; }
+  .accordion.closed .acc-body { display: none; }
+
+  .synopsis-text {
+    font-size: 13px; line-height: 1.7; color: #9ca3af;
+    text-align: center; padding: 0 8px;
+  }
+  .meta-pills {
+    display: flex; align-items: center; justify-content: center;
+    gap: 12px; margin-top: 16px;
+    font-size: 12px; color: #9ca3af;
+  }
+  .meta-pills .age {
+    padding: 2px 10px;
+    background: rgba(200, 40, 80, 0.2);
+    color: #ff6b8f;
+    border-radius: 6px;
+    font-weight: 700; font-size: 11px;
+  }
+  .meta-pills .more { color: #9ca3af; cursor: pointer; }
+
+  /* Platform logos row - can be toggled via .hidden */
+  .platform-row {
+    display: flex; align-items: center; justify-content: center;
+    gap: 14px;
+    padding: 14px 20px;
+    margin: 0 20px 8px;
+    border: 1px solid #1a1f2a;
+    border-radius: 10px;
+    font-size: 13px;
+  }
+  .platform-row .netflix { color: #e50914; font-weight: 900; letter-spacing: 0.5px; }
+  .platform-row .tving { color: #e4195a; font-weight: 900; font-style: italic; }
+  .platform-row .coupang {
+    color: #fff; font-weight: 600;
+    display: flex; align-items: center; gap: 3px;
+  }
+  .platform-row .coupang::before { content: '▶'; color: #00b6e8; font-size: 10px; margin-right: 3px; }
+  .platform-row .divider { width: 1px; height: 12px; background: #2a3140; }
+  .platform-row.hidden { display: none; }
+
+  .detail-banner { margin: 12px 20px 14px; }
+
+  .cast-list { display: flex; flex-direction: column; }
+  .cast-item {
+    padding: 12px 0;
+    font-size: 15px; font-weight: 600;
+    color: #fff;
+    border-bottom: 1px solid #131722;
+  }
+  .cast-item:last-child { border-bottom: none; }
+
+  /* Watch Now bar — full-width, no heart */
+  .watch-bar {
+    flex-shrink: 0;
+    padding: 14px 20px 28px;
+    background: #0a0c10;
+    border-top: 1px solid #151923;
+    z-index: 50;
+  }
+  .watch-btn {
+    display: block; width: 100%;
+    padding: 15px;
+    background: #3b9eff; border: none;
+    border-radius: 12px;
+    color: #fff; font-size: 16px; font-weight: 700;
+    text-align: center; cursor: pointer;
+    text-decoration: none;
+  }
+  .watch-btn:active { background: #2889e8; }
+
+  .hidden { display: none !important; }
+
+  /* fade-in helper */
+  .fade-in { animation: fadeIn 0.3s ease; }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+</style>
+</head>
+<body>
+<div class="viewport">
+  <div class="phone">
+
+    <!-- Status bar -->
+    <div class="status-bar">
+      <span>5:13</span>
+      <div class="status-right">
+        <svg width="17" height="11" viewBox="0 0 17 11" fill="currentColor"><rect x="0" y="8" width="2.5" height="3" rx="0.5"/><rect x="4" y="5.5" width="2.5" height="5.5" rx="0.5"/><rect x="8" y="2.5" width="2.5" height="8.5" rx="0.5"/><rect x="12" y="0" width="2.5" height="11" rx="0.5"/></svg>
+        <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor"><path d="M8 2c2 0 3.9.7 5.4 2l1.5-1.5C12.9.8 10.5 0 8 0S3.1.8 1.1 2.5L2.6 4C4.1 2.7 6 2 8 2z"/><path d="M8 5c1.3 0 2.5.4 3.4 1.2l1.5-1.5C11.6 3.6 9.9 3 8 3s-3.6.6-4.9 1.7l1.5 1.5C5.5 5.4 6.7 5 8 5z"/><path d="M8 8c.6 0 1.2.2 1.6.6L8 10.2 6.4 8.6c.4-.4 1-.6 1.6-.6z"/></svg>
+        <span class="battery">76</span>
+      </div>
+    </div>
+
+    <div class="app">
+
+      <!-- ============ HOME ============ -->
+      <section class="screen active" id="home">
+        <div class="home-content scroll-area">
+          <header class="home-header">
+            <div class="logo">Moyza</div>
+            <button class="icon-btn" aria-label="language">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><ellipse cx="12" cy="12" rx="4" ry="9"/></svg>
+            </button>
+          </header>
+
+          <div class="home-search">
+            <div class="search-wrap">
+              <input class="search-input" placeholder="Please enter a keyword." readonly onclick="showScreen('search')">
+              <svg class="ico-search" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            </div>
+          </div>
+
+          <!-- Survey banner (moved to TOP per PDF) -->
+          <a href="#" class="survey-banner" target="_blank" rel="noopener">
+            <div class="sb-text"><strong>Join now and get a<br>free Americano !</strong></div>
+            <div class="sb-coffee">
+              <svg width="60" height="52" viewBox="0 0 60 52" fill="none">
+                <ellipse cx="30" cy="12" rx="20" ry="4" fill="#3a1f10"/>
+                <path d="M10 12 Q10 44 30 50 Q50 44 50 12" fill="#6b3a20"/>
+                <ellipse cx="30" cy="12" rx="18" ry="3" fill="#2a1408"/>
+                <ellipse cx="30" cy="11" rx="15" ry="2" fill="#4a2818"/>
+              </svg>
+              <div class="sb-stamp">100%<br>증정</div>
+            </div>
+          </a>
+
+          <!-- 1. 업데이트 신작 -->
+          <div class="section">
+            <div class="section-head">
+              <div>
+                <span class="sub">What's new on Moyza</span>
+                <h3>업데이트 신작</h3>
+              </div>
+              <svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+            </div>
+            <div class="h-scroll">
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-akdong"><div class="top-badge">TOP</div><div class="pl">악동<br>탐정스2</div></div>
+                <div class="title">악동 탐정스2</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 5.0</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-romance"><div class="pl">로맨스<br>토킹</div></div>
+                <div class="title">로맨스, 토킹</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.8</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-iconcare"><div class="pl">아이돈<br>케어</div></div>
+                <div class="title">아이돈케어</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.7</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-parttime"><div class="pl">파트타임<br>멜로</div></div>
+                <div class="title">파트타임 멜로</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.9</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-playlist"><div class="pl">너의<br>재생목록</div></div>
+                <div class="title">너의 재생목록</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.6</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. 인기작 픽 -->
+          <div class="section">
+            <div class="section-head">
+              <div>
+                <span class="sub">What's popular right now</span>
+                <h3>인기작 픽</h3>
+              </div>
+              <svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+            </div>
+            <div class="h-scroll">
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-parttime"><div class="top-badge">TOP</div><div class="pl">파트타임<br>멜로</div></div>
+                <div class="title">파트타임 멜로</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.8</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-playlist"><div class="pl">너의<br>재생목록</div></div>
+                <div class="title">너의 재생목록</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.7</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-nobbakku"><div class="pl">노빠꾸<br>로맨스</div></div>
+                <div class="title">노빠꾸 로맨스</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 5.0</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-romance"><div class="pl">로맨스<br>토킹</div></div>
+                <div class="title">로맨스, 토킹</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.5</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-etween"><div class="pl">에이틴</div></div>
+                <div class="title">에이틴</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.6</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. 코리아 픽 -->
+          <div class="section">
+            <div class="section-head">
+              <div>
+                <span class="sub">From Korea</span>
+                <h3>코리아 픽</h3>
+              </div>
+              <svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+            </div>
+            <div class="h-scroll">
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-etween"><div class="pl">에이틴</div></div>
+                <div class="title">에이틴</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.7</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-akdong"><div class="pl">악동<br>탐정스2</div></div>
+                <div class="title">악동 탐정스2</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 5.0</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-iconcare"><div class="pl">아이돈<br>케어</div></div>
+                <div class="title">아이돈케어</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.8</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-playlist"><div class="pl">너의<br>재생목록</div></div>
+                <div class="title">너의 재생목록</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.5</div>
+              </div>
+              <div class="card" onclick="openDetail()">
+                <div class="poster p-nobbakku"><div class="pl">노빠꾸<br>로맨스</div></div>
+                <div class="title">노빠꾸 로맨스</div>
+                <div class="meta">20 EP · Genre</div>
+                <div class="rating">★ 4.9</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bottom Nav: Home / Event(탐색) / Board(설문) -->
+        <nav class="bottom-nav">
+          <button class="nav-btn active" data-tab="home">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>
+            <span>Home</span>
+          </button>
+          <button class="nav-btn" onclick="showScreen('search')">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2.3 6.2-6.2 2.3 2.3-6.2z" fill="currentColor" fill-opacity="0.2"/></svg>
+            <span>Event</span>
+          </button>
+          <button class="nav-btn" onclick="openSurvey()">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V2.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1V4"/><path d="M8.5 10.5h.01M11 10.5h5M8.5 14.5h.01M11 14.5h5M8.5 18.5h.01M11 18.5h3"/></svg>
+            <span>Board</span>
+          </button>
+        </nav>
+      </section>
+
+      <!-- ============ SEARCH ============ -->
+      <section class="screen" id="search">
+       <div class="scroll-area">
+        <div class="search-header">
+          <button class="back-btn" onclick="showScreen('home')">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
+          <div class="search-wrap">
+            <input class="search-input" placeholder="Please enter a keyword.">
+            <svg class="ico-search" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          </div>
+        </div>
+
+        <div class="filter">
+          <div class="filter-head">
+            <h3>Filter</h3>
+            <svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+          </div>
+
+          <div class="filter-row">
+            <span class="label">Country</span>
+            <div class="pills">
+              <button class="pill">USA</button>
+              <button class="pill active">Korea</button>
+              <button class="pill">China</button>
+              <button class="pill">Japan</button>
+            </div>
+          </div>
+
+          <div class="filter-row">
+            <span class="label">Genre</span>
+            <div class="pills">
+              <button class="pill">Romance</button>
+              <button class="pill active">Horror</button>
+              <button class="pill">Action</button>
+              <button class="pill active">Comedy</button>
+              <button class="pill">B/L</button>
+            </div>
+          </div>
+
+          <!-- Platform: TEXT ONLY per PDF -->
+          <div class="filter-row">
+            <span class="label">Platform</span>
+            <div class="platform-text">
+              <span>NETFLIX</span>
+              <span class="sel">TVING</span>
+              <span>Disney+</span>
+              <span class="sel">coupang play</span>
+              <span>Wavve</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="results-head">
+          <div class="count">Results <strong>6</strong></div>
+          <div class="sort">Latest first
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card" onclick="openDetail()">
+            <div class="poster p-parttime"><div class="pl">파트타임<br>멜로</div></div>
+            <div class="title">파트타임 멜로</div>
+          </div>
+          <div class="card" onclick="openDetail()">
+            <div class="poster p-playlist"><div class="pl">너의<br>재생목록</div></div>
+            <div class="title">너의 재생목록</div>
+          </div>
+          <div class="card" onclick="openDetail()">
+            <div class="poster p-akdong"><div class="pl">악동<br>탐정스</div></div>
+            <div class="title">악동 탐정스</div>
+          </div>
+          <div class="card" onclick="openDetail()">
+            <div class="poster p-nobbakku"><div class="pl">노빠꾸<br>로맨스</div></div>
+            <div class="title">노빠꾸 로맨스</div>
+          </div>
+          <div class="card" onclick="openDetail()">
+            <div class="poster p-romance"><div class="pl">로맨스<br>토킹</div></div>
+            <div class="title">로맨스, 토킹</div>
+          </div>
+          <div class="card" onclick="openDetail()">
+            <div class="poster p-etween"><div class="pl">에이틴</div></div>
+            <div class="title">에이틴</div>
+          </div>
+        </div>
+       </div>
+      </section>
+
+      <!-- ============ DETAIL ============ -->
+      <section class="screen" id="detail">
+        <div class="detail-content scroll-area">
+
+          <div class="hero">
+            <div class="detail-top-bar">
+              <button class="back-btn" onclick="goBack()">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+              </button>
+              <div class="right">
+                <button class="icon-btn">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                </button>
+                <!-- Share icon hidden per PDF -->
+              </div>
+            </div>
+            <div class="hero-title">
+              <h1>레이디 두아</h1>
+              <div class="rating">
+                <span class="star">★</span> 5.0 <span style="color:#6a7180">(207건 리뷰)</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-tab="synopsis">Synopsis</button>
+            <button class="tab" data-tab="cast">Cast</button>
+            <button class="tab" data-tab="similar">Similar</button>
+          </div>
+
+          <div class="accordion" id="accSynopsis">
+            <button class="acc-head">
+              <h3>Synopsis</h3>
+              <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m18 15-6-6-6 6"/></svg>
+            </button>
+            <div class="acc-body">
+              <p class="synopsis-text">Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s....</p>
+              <div class="meta-pills">
+                <span class="age">19+</span>
+                <span>2025</span>
+                <span>20 EP</span>
+                <span>Drama</span>
+                <span class="more">More</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Platform row (toggle via .hidden per dev period) -->
+          <div class="platform-row" id="platformRow">
+            <span class="netflix">NETFLIX</span>
+            <span class="divider"></span>
+            <span class="tving">TVING</span>
+            <span class="divider"></span>
+            <span class="coupang">coupang play</span>
+          </div>
+
+          <!-- Survey banner (inline link) -->
+          <a href="#" class="survey-banner detail-banner" target="_blank" rel="noopener">
+            <div class="sb-text"><strong>Join now and get a<br>free Americano !</strong></div>
+            <div class="sb-coffee">
+              <svg width="60" height="52" viewBox="0 0 60 52" fill="none">
+                <ellipse cx="30" cy="12" rx="20" ry="4" fill="#3a1f10"/>
+                <path d="M10 12 Q10 44 30 50 Q50 44 50 12" fill="#6b3a20"/>
+                <ellipse cx="30" cy="12" rx="18" ry="3" fill="#2a1408"/>
+                <ellipse cx="30" cy="11" rx="15" ry="2" fill="#4a2818"/>
+              </svg>
+              <div class="sb-stamp">100%<br>증정</div>
+            </div>
+          </a>
+
+          <div class="accordion" id="accCast">
+            <button class="acc-head">
+              <h3>Cast</h3>
+              <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m18 15-6-6-6 6"/></svg>
+            </button>
+            <div class="acc-body">
+              <div class="cast-list">
+                <div class="cast-item">사라 킴</div>
+                <div class="cast-item">박무경</div>
+                <div class="cast-item">정여진</div>
+                <div class="cast-item">김미정</div>
+                <div class="cast-item">오츠유</div>
+                <div class="cast-item">이하영</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Watch Now bar (full-width, heart removed per PDF) -->
+        <div class="watch-bar">
+          <a class="watch-btn" href="#" target="_blank" rel="noopener">Watch Now</a>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  const screenHistory = ['home'];
+
+  function showScreen(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    const el = document.getElementById(id);
+    el.classList.add('active');
+    el.classList.remove('fade-in'); void el.offsetWidth; el.classList.add('fade-in');
+    el.scrollTop = 0;
+    if (screenHistory[screenHistory.length - 1] !== id) screenHistory.push(id);
+  }
+
+  function goBack() {
+    screenHistory.pop();
+    const prev = screenHistory[screenHistory.length - 1] || 'home';
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    const el = document.getElementById(prev);
+    el.classList.add('active');
+    el.classList.remove('fade-in'); void el.offsetWidth; el.classList.add('fade-in');
+  }
+
+  function openDetail() { showScreen('detail'); }
+
+  function openSurvey() {
+    window.open('#', '_blank');
+  }
+
+  // Tab switching — Synopsis/Cast scroll to their accordion
+  document.querySelectorAll('.tabs').forEach(group => {
+    group.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        group.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const target = tab.dataset.tab;
+        const map = { synopsis: 'accSynopsis', cast: 'accCast' };
+        const id = map[target];
+        if (id) {
+          const acc = document.getElementById(id);
+          acc.classList.remove('closed');
+          const scrollEl = document.querySelector('#detail .scroll-area');
+          const top = acc.offsetTop - 48;
+          scrollEl.scrollTo({ top, behavior: 'smooth' });
+        }
+      });
+    });
+  });
+
+  // Accordions
+  document.querySelectorAll('.accordion .acc-head').forEach(head => {
+    head.addEventListener('click', () => head.parentElement.classList.toggle('closed'));
+  });
+
+  // Pill toggle (Country / Genre)
+  document.querySelectorAll('.pills').forEach(g => {
+    g.querySelectorAll('.pill').forEach(p => {
+      p.addEventListener('click', () => p.classList.toggle('active'));
+    });
+  });
+
+  // Platform text toggle (Search screen)
+  document.querySelectorAll('.platform-text span').forEach(s => {
+    s.addEventListener('click', () => s.classList.toggle('sel'));
+  });
+
+  // Dev flag: toggle platform row visibility on detail
+  // To hide per PDF ("개발 기간에 따라 숨김 처리"), set to true
+  const HIDE_PLATFORM_ROW = false;
+  if (HIDE_PLATFORM_ROW) {
+    document.getElementById('platformRow').classList.add('hidden');
+  }
+</script>
+</body>
+</html>
