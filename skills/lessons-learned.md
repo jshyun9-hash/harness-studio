@@ -86,3 +86,45 @@
     </PhoneFrame>
     ```
     이유: 딥링크 가능, 뒤로가기 버튼 자연 지원, 각 화면이 자기 상태/스크롤/API 호출을 독립 관리. 비노출 요소(원본 HTML 의 공유/하트 아이콘 등)는 포팅 단계에서 **데이터는 살려두고 DOM 만 제거** — v2 토글 가능하도록 설계.
+
+19. **H2 v2 에서 긴 텍스트 필드는 `@Lob` 단독으로 선언 (`columnDefinition="TEXT"` 금지)** — split backend + shared DB 구조에서 `@Lob + @Column(columnDefinition = "TEXT")` 조합으로 만든 `String` 필드는 H2 가 스키마를 `VARCHAR` 로 생성한다. 반면 Hibernate 의 `@Lob(String)` 은 validate 시점에 `Types#CLOB` 을 기대하므로, `ddl-auto=validate` 인 하위 모듈(이 프로젝트는 admin) 이 기동 시 아래 에러로 실패한다.
+    ```
+    Schema-validation: wrong column type encountered in column [synopsis] in table [title];
+      found [character varying (Types#VARCHAR)], but expecting [text (Types#CLOB)]
+    ```
+    단일 백엔드(H2 + update/create) 환경에서는 드러나지 않고, **shared DB + validate 모듈** 조합에서만 터진다. 해결:
+    ```java
+    // ❌ H2 가 VARCHAR 로 만듦 → validate 실패
+    @Lob
+    @Column(name = "synopsis", columnDefinition = "TEXT")
+    private String synopsis;
+
+    // ✅ H2 가 CLOB 으로 만듦 → validate 통과
+    @Lob
+    @Column(name = "synopsis")
+    private String synopsis;
+    ```
+    YML 에서 `type: Text` 필드는 **항상** 이 패턴으로 생성. `columnDefinition` 을 지정해야 한다면 `"CLOB"` 으로 (DB별 예약어 문제 있어 가급적 미지정 권장). 확인된 재현 프로젝트: prototype v1 (2026-04-19 수동 정정, v2 에서 하네스 반영).
+
+20. **매핑 테이블 교체(delete-then-insert)는 같은 트랜잭션에서 `flush()` 강제** — "기존 매핑 전부 삭제 후 재삽입" 패턴 (예: `Title-Genre`, `Title-Cast`, `Title-Platform` 같은 다대다 브릿지) 에서 파생 메서드 `deleteByTitleId(...)` 를 호출한 직후 같은 트랜잭션에서 `save(...)` 로 재삽입하면, Hibernate 의 ActionQueue 가 INSERT 를 DELETE 보다 **먼저** flush 하여 UNIQUE 제약(`(title_id, genre_code_id)`, `(title_id, cast_id)` 등) 위반이 발생한다. 단일 트랜잭션 커밋 직전에는 양쪽 다 반영되지만, **flush 순서상** 중간에 DB 에 이전 row 가 살아있는 상태로 새 row 를 넣는 시점이 생기기 때문.
+    ```java
+    // ❌ 작품 수정 시 500 에러
+    @Transactional
+    public void replaceGenres(Long titleId, ... bulk) {
+        titleGenreRepository.deleteByTitleId(titleId);
+        for (var item : bulk.getItems()) {
+            titleGenreRepository.save(TitleGenre.builder()...build());
+        }
+    }
+
+    // ✅ delete 를 먼저 SQL 로 확정
+    @Transactional
+    public void replaceGenres(Long titleId, ... bulk) {
+        titleGenreRepository.deleteByTitleId(titleId);
+        titleGenreRepository.flush();   // ← DELETE 를 즉시 DB 에 반영
+        for (var item : bulk.getItems()) {
+            titleGenreRepository.save(TitleGenre.builder()...build());
+        }
+    }
+    ```
+    대안: derived delete 대신 `@Modifying @Query("delete from TitleGenre tg where tg.titleId = :titleId")` 로 벌크 JPQL DELETE 사용 (자동 flush, 1차 캐시 무효화 옵션 가능). 두 방식 다 허용하되, 기본은 **flush 강제** 패턴을 권장 — derived 메서드의 단순함을 유지. 재현 프로젝트: prototype v1 (2026-04-19 수동 정정, v2 하네스 반영).

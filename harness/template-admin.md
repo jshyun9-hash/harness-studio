@@ -108,10 +108,10 @@
     ))}
   </nav>
 
-  {/* 하단 사용자 정보 */}
+  {/* 하단 사용자 정보 — 로그인한 관리자 표시만 (로그아웃 버튼은 Topbar 에) */}
   <div className="border-t border-slate-800 p-4">
     <div className="text-sm text-slate-300">{member?.name}</div>
-    <button className="mt-2 text-xs text-slate-400 hover:text-white">로그아웃</button>
+    <div className="text-xs text-slate-500">{member?.loginId}</div>
   </div>
 </aside>
 ```
@@ -121,6 +121,7 @@
 - `nav_group` 으로 그룹핑, 각 그룹 내 `nav_order` 순
 - 그룹이 없는 항목은 그룹 상단 / 없으면 일반 리스트
 - 활성 표시: 왼쪽 흰색 보더 + `bg-slate-800`
+- 하단 카드에는 **이름 + 로그인 ID 만** 노출. 로그아웃 버튼/링크는 두지 않는다 (중복 방지).
 
 ### Topbar.tsx
 ```tsx
@@ -133,13 +134,35 @@
   {/* 좌: 페이지 타이틀 (breadcrumb 가능) */}
   <h1 className="text-base font-semibold text-gray-900">{pageTitle}</h1>
 
-  {/* 우: 액션 */}
+  {/* 우: 액션 — 관리자 이름은 Sidebar 하단에만. Topbar 에는 로그아웃 아이콘만 둔다. */}
   <div className="ml-auto flex items-center gap-3">
     {/* 검색/알림 (옵션) */}
-    <div className="text-sm text-gray-500">{member?.name}</div>
+    {/* 로그아웃 — 아이콘만, 텍스트 라벨 없음 (aria-label 로 접근성 확보) */}
+    <button
+      type="button"
+      onClick={() => { void logout(); }}
+      aria-label="로그아웃"
+      title="로그아웃"
+      className="rounded-md p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+    >
+      {/* logout 아이콘 (문+화살표). 20x20, stroke=currentColor */}
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+        <polyline points="16 17 21 12 16 7" />
+        <line x1="21" y1="12" x2="9" y2="12" />
+      </svg>
+    </button>
   </div>
 </header>
 ```
+
+#### Topbar 로그아웃 규칙
+- **로그아웃 액션은 Topbar 우측에만** 둔다. Sidebar 하단 카드에는 절대 중복으로 두지 않는다.
+- 버튼은 **아이콘만** (텍스트 라벨 금지). 접근성은 `aria-label` + `title` 로 확보.
+- 아이콘: "문 밖으로 나가는 화살표" (lucide-style logout 아이콘) stroke=currentColor, 20×20.
+- `useSession().logout()` 호출. 세션 삭제 후 `/login` 으로 이동은 `SessionProvider` 책임.
+- **관리자 이름은 Topbar 에 표시하지 않는다** — Sidebar 하단 카드에만 노출 (이중 표기 금지).
 
 ---
 
@@ -259,6 +282,7 @@ src/components/common/
 ├── table/
 │   ├── DataTable.tsx      # 리스트 표준 (컬럼 정의 + 데이터 + 정렬 + 페이지네이션 + 행 액션 + 상태 통합)
 │   ├── Pagination.tsx
+│   ├── RowActionChip.tsx  # 수정/삭제 등 행 액션 chip (variant: default | danger)
 │   └── Toolbar.tsx        # 테이블 상단 툴바 (검색/필터/신규 버튼 묶음)
 ├── form/
 │   ├── FormSection.tsx    # 카드형 폼 섹션 (제목 + children)
@@ -388,6 +412,26 @@ toast.error('저장 실패');
 
 admin 모듈 페이지를 만들 때는 위 공통 컴포넌트의 **import + 사용** 만으로 페이지가 구성돼야 한다.
 직접 `<table>`, `<input type="text">`, `window.confirm`, `alert` 등 원시 요소 사용 금지.
+
+### 리스트 페이지 표준 구성 (필수)
+
+admin 모듈의 **모든 list 페이지는 아래 3종 세트로 구성**한다. 하나라도 누락되면 하네스 위반.
+
+1. **SearchFilter** — 테이블 위에 항상 검색 카드 배치. 필터 키가 없어도 최소 1개 텍스트 검색 필드는 둔다.
+   - 값 상태: `filterDraft` (입력 중) + `filterApplied` (실제 적용). "검색" 클릭 시에만 `filterApplied` 갱신 + `page = 1` 리셋.
+   - 초기화: `filterDraft` 와 `filterApplied` 모두 초기값으로, `page = 1`.
+2. **DataTable** — 리스트 본체. `<table>` 직접 사용 금지.
+3. **Pagination** — DataTable 하단. 고정 seed 데이터(예: Section 3건) 처럼 건수가 원천적으로 적은 경우만 생략 가능. 기본 `PAGE_SIZE = 20`.
+4. **RowActionChip** — DataTable 의 `rowActions` 슬롯 안에서 수정/삭제 등 행 액션은 raw `<button>` 이 아니라 이 chip 공통 컴포넌트를 사용한다. `variant="default"` (수정/보기) / `variant="danger"` (삭제) 두 톤만 허용. pill 테두리(`rounded-full border`) + 흰 배경 + hover 톤 변화로 통일.
+
+백엔드 시그니처도 동시에:
+- Controller: `@RequestParam` 으로 필터 키 + `page` (기본 1) + `size` (기본 20)
+- Repository: `JpaSpecificationExecutor<T>` 를 구현 (검색 Specification 조합)
+- Service: `list(...filters, int page, int size) → PageResponse<T>` 반환. `PageRequest.of(page - 1, size, Sort...)`.
+
+예외 허용:
+- **인증 페이지** (`Login`, `Signup`) — 단독 풀스크린 카드 UI, `Layout` / `FormSection` 생략 가능.
+- **Seed 고정 리스트** (예: Section 3건) — SearchFilter / Pagination 생략 가능하지만 **DataTable 은 반드시 사용**.
 
 ---
 

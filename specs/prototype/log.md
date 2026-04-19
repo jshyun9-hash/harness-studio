@@ -2,17 +2,186 @@
 
 ## 현재 최신 버전
 
-**v1** — 2026-04-17
+**v2** — 2026-04-19 (재생성 완료)
 
-- 파일: [prototype.v1.yml](prototype.v1.yml)
-- 원문: [spec-requests/prototype/prototype.v1.md](../../spec-requests/prototype/prototype.v1.md)
+- 파일: [prototype.v2.yml](prototype.v2.yml)
+- 원문: [spec-requests/prototype/prototype.v2.md](../../spec-requests/prototype/prototype.v2.md)
 - 자료:
   - `spec-requests/prototype/프로토타입_ux.pdf` — PDF 레퍼런스 (5페이지)
   - `spec-requests/prototype/prototype_claude.html` — HTML 프로토타입 (ui_source)
+- 스키마: [projects/prototype/schema.md](../../projects/prototype/schema.md)
+- 빌드 로그: [log/2026-04-19_prototype_v2.md](../../log/2026-04-19_prototype_v2.md)
+
+> v1 코드에는 이미 `Title.synopsis` 매핑 정정이 수동 반영되어 있었으나, 하네스 규칙 승격(lessons-learned #19/#20)의 실증을 위해 2026-04-19 에 **전량 재생성**. 섹션 1~5 모두 완료, 2 BE 스모크 테스트 통과 (admin BE validate 기동 성공 = @Lob 단독 매핑 재생성 반영 확인).
+
+---
+
+## 재생성 진행 상태 (2026-04-19 완료)
+
+**착수**: 2026-04-19. 방식: 완전 재생성 (옵션 1). 기존 DB/storage/코드 모두 삭제 후 재생성. **섹션 1~5 모두 완료**, 최종 산출물 + 스모크 테스트 완료.
+
+### 완료
+- 4개 서버 종료 (8082/8083/5177/5178) + 자식 Java/Node 프로세스 kill.
+- `projects/prototype/` 디렉토리 통째 삭제 후 `backend/{user,admin}` + `frontend` + `data` + `storage/uploads` 재생성.
+- 양쪽 BE Spring Initializr 스캐폴딩 (Spring Boot 3.5.4 + Java 21 + Gradle 8.14.4 + web/data-jpa/h2/validation/lombok).
+- `application.properties` 삭제 후 `application.yml` 작성 (양쪽). HELP.md 제거.
+  * user: port 8082, ddl-auto=update, 세션쿠키 `PROTOTYPE_USER_SESSION`, H2 AUTO_SERVER, 파일 루트 `../../storage/uploads`
+  * admin: port 8083, ddl-auto=validate, 세션쿠키 `PROTOTYPE_ADMIN_SESSION`, 동일 DB 공유
+- **섹션 1 완료** (2026-04-19): Application 클래스 `@EnableJpaAuditing` / 공통 global (ApiResponse, PageResponse, BaseEntity, CorsConfig, GlobalExceptionHandler) × 2 / admin SessionRoleFilter / 엔티티 13 × 2 (Title.synopsis `@Lob` 단독, Cast → `cast_member`) / Repository 13 × 2 (Banner/Cast/Title `JpaSpecificationExecutor` 포함) / File 모듈 (user: 다운로드, admin: 업로드+다운로드) / Code 모듈 (공개 조회). **`./gradlew compileJava` 양쪽 BUILD SUCCESSFUL**.
+- **섹션 2 완료** (2026-04-19):
+  - build.gradle.kts 에 `org.springframework.security:spring-security-crypto` 의존성 추가 (양쪽, BCryptPasswordEncoder 사용).
+  - user: SeedRunner (admin 계정 + COUNTRY/GENRE/PLATFORM 3그룹 + 섹션 3건 + SiteSetting singleton), HomeResponse DTO, HomeService (getBanners 분리), HomeController, BannerController(`/api/banners` 공개), Title DTO(Search/Summary/Detail), TitleQueryService(JpaSpec + 장르/플랫폼 subquery 필터 + 정렬), TitleController.
+  - admin: PasswordConfig (BCryptPasswordEncoder Bean), Auth DTO/Service/Controller (signup/login/logout/me/check-id, 세션 기록, role=ADMIN 강제), SiteSetting DTO/Service/Controller, Banner DTO/Service/Controller (JpaSpec + PageResponse, `?linkUrl&visible&page&size`), Cast DTO/Service/Controller (`?name&active&page&size`, 양쪽 이름 OR 검색), Section DTO/Service/Controller (노출명/EN/서브라벨 편집 확장), Code DTO/Service/Controller (CRUD), Title DTO (Request/MappingRequests/AdminResponse)/Service (`?q&active&page&size` + replace\* 에 `flush()`)/Controller.
+  - **`./gradlew build -x test` 양쪽 BUILD SUCCESSFUL**.
+- **섹션 4 완료** (2026-04-19) — Frontend admin (port 5178, template=admin):
+  - Vite 7.3 + React 19.2 + TS 5.9 + Tailwind v4 스캐폴딩. `vite.config.ts` port 5178 strictPort + proxy `/api` → `http://127.0.0.1:8083`.
+  - API 레이어: `http.ts` (get/post/put/delete/upload, credentials:include, ApiResponse 언래핑, ApiError status 보존, 배열 params 반복) + 7 개 모듈 (`authApi`, `bannerApi`, `sectionApi`, `titleApi`, `castApi`, `codeApi`, `siteSettingApi`, `fileApi`).
+  - 세션: `SessionProvider` + `useSession()` (me 부팅 로드, 401/403 시 null). `ProtectedRoute` (authLoading 끝난 뒤 role=ADMIN 확인, 아니면 `/login` Navigate — lessons-learned #9 준수) / `PublicOnly` (로그인 상태에서 `/login`·`/signup` 접근 시 `/` 로 리다이렉트).
+  - 공통 컴포넌트 (src/components/common/ 사전 생성, 페이지에서 raw `<table>`/`<input>`/`alert`/`window.confirm` 금지):
+    * feedback: `LoadingSpinner`, `ErrorAlert`, `EmptyState`, `Dialog`(ESC 닫기 + body overflow lock), `ConfirmDialog`(variant default|danger), `Toast`+`ToastProvider`+`useToast()`.
+    * table: `DataTable<T>`(columns/rows/rowKey/loading/empty/onRowClick/rowActions/sort), `Pagination`(page/size/totalCount/onChange), `Toolbar`, `RowActionChip`(variant default|danger, pill).
+    * form: `FormSection`(title/description/footer), `FormField`(label/required/error/helpText), `TextInput`/`TextareaInput`/`NumberInput`/`SelectBox<V>`(제네릭 value 타입 보존)/`MultiSelectBox<V>`(선택 순서 숫자 표시)/`Checkbox`/`Switch`/`DatePicker`/`FileUploader`(fileApi.upload 내장, 이미지 미리보기 + 제거 버튼).
+    * search: `SearchFilter`(fields + values draft + onApply/onReset — draft vs applied 분리, 검색 클릭 시에만 page=1 리셋).
+    * code: `CodeSelect`/`CodeMultiSelect`(groupKey 주입 → `useCodeItems(groupKey)` 로 `/api/codes/{groupKey}` 자동 로드, active 만 필터).
+  - 레이아웃 (`Layout`):
+    * `Sidebar` (w-60, bg-slate-900, nav 그룹 3개: 운영/컨텐츠/시스템 × 항목 7건, 활성 경로 `border-l-2 border-white + bg-slate-800`, **하단 카드 = 이름 + 로그인 ID 만, 로그아웃 버튼 없음** — template-admin 규칙).
+    * `SidebarDrawer` (<md fixed 슬라이드 + overlay, 메뉴 클릭 시 자동 닫힘).
+    * `Topbar` (h-14, 페이지 타이틀 동적 매핑, 우측 **로그아웃 아이콘 버튼만** — 텍스트 라벨 없음, aria-label/title 로 접근성 — template-admin 규칙).
+    * 컨텐츠 영역 `bg-slate-50`.
+  - 페이지 12개:
+    * `/login` `LoginPage` — 카드형, 실패 시 인라인 `ErrorAlert`, 성공 후 `/` 이동.
+    * `/signup` `SignupPage` — 중복확인 버튼 (`check-id`) + 비밀번호 확인 검증, 성공 후 자동 로그인 + `/` 이동.
+    * `/` `DashboardPage` — 통계 카드 3개 (작품/배너/배우 `totalCount`) + 최근 작품 5건 리스트.
+    * `/banners` `BannerListPage` — `SearchFilter(linkUrl,visible) + DataTable + Pagination + RowActionChip + ConfirmDialog(danger)`.
+    * `/banners/new` / `/banners/:id` `BannerFormPage(mode)` — `FileUploader`(배너 이미지) + `TextInput`(link) + `NumberInput`(sort) + `Checkbox`(visible).
+    * `/sections` `SectionListPage` — Seed 3건 고정 (SearchFilter/Pagination 생략 허용 규칙 적용), `DataTable` + 인라인 TextInput/NumberInput blur 저장 + `Switch`(visible) — section_key read-only, v2 신규 display_name_ko/en/sub_label 편집 포함.
+    * `/titles` `TitleListPage` — `SearchFilter(q, active) + DataTable + Pagination + RowActionChip`.
+    * `/titles/new` / `/titles/:id` `TitleFormPage(mode)` — 기본정보 2열 그리드 + 이미지 (poster/backdrop) + 장르 `CodeMultiSelect` + `PlatformsEditor`(플랫폼 pill + watchUrl 인풋 + 중복 차단) + `SimilarTitlesEditor`(작품 select + 자기 자신 제외 + 중복 차단) + `CastEditor`(활성 배우 select + roleLabel 인풋). 저장 시 `create/update` 후 4개 매핑 `replace*` 병렬 호출.
+    * `/casts` `CastListPage` — 동일 패턴.
+    * `/casts/new` / `/casts/:id` `CastFormPage(mode)` — `TextInput` + `FileUploader`(profile) + `Checkbox`(active).
+    * `/codes` `CodePage` — 좌측 그룹 사이드바 (system 배지) + 우측 `DataTable` + `Dialog`(아이템 추가/수정) + `ConfirmDialog(danger)`.
+    * `/settings` `SettingPage` — `FileUploader`(로고) + `TextInput`(board_survey_url).
+  - 비노출 정책: 페이지에서 `<table>`/`<input>`/`alert`/`window.confirm` 직접 사용 없음 — 모두 공통 컴포넌트 경유. 삭제는 `ConfirmDialog(danger)` / 피드백은 `useToast()`.
+  - 빌드: `npm install` ✓ / `npx tsc -b` ✓ (에러 0) / `npx vite build` ✓ (97 modules, `dist/assets/index-*.js` 290 KB / gzip 88 KB, CSS 24 KB / gzip 5.3 KB).
+- **섹션 3 완료** (2026-04-19) — Frontend user (port 5177, template=custom, ui_source=prototype_claude.html):
+  - Vite 7.3 + React 19.2 + TS 5.9 + Tailwind v4 (@tailwindcss/vite) 스캐폴딩. `vite.config.ts` port 5177 strictPort + proxy `/api` → `http://127.0.0.1:8082`.
+  - `index.css` Tailwind v4 `@theme` 토큰(moyza-bg/panel/primary/muted/rating/badge/pill-border) + poster gradient 7종 + hero gradient + fade-in 애니메이션.
+  - 레이아웃: `PhoneFrame` (데스크톱 390×844 + 노치/인디케이터, <500px 풀스크린) / `StatusBar` / `ScreenShell` (스크롤 영역 + 고정 bottom 슬롯) / `BottomNav` (Home/Event/Board, Board 는 `siteSetting.boardSurveyUrl` 새창).
+  - API 레이어: `http.ts` (fetch + credentials:include + ApiResponse 언래핑 + URLSearchParams 배열 직렬화 + `ApiError` status 보존) / `homeApi` / `bannerApi` / `titleApi` / `codeApi`.
+  - 훅: `useHome` / `useBanners` / `useTitleList(JSON.stringify 의존성 키)` / `useTitleDetail` / `useCodeList(active만)`.
+  - 홈 (`/`): `HomeHeader` (Moyza 필기체 로고 + globe) / 검색 버튼 (readonly, 클릭 시 `/search`) / `BannerCarousel` (관리자 배너, 가로 스냅 스크롤, 없으면 미렌더) / `SectionRow` × N (서버가 `is_visible=true` 섹션만 반환 — HomeService 에서 필터) / `TitleCard` (scroll 모드, 첫 번째 카드 TOP 배지, posterUrl 없으면 `poster-gradient-*` 폴백). **SurveyBanner 제거됨** (v2 정책).
+  - 탐색 (`/search`): `SearchHeader` (뒤로가기 + 인풋) / `FilterPanel` (Country pill, Genre pill, Platform 텍스트 토글 — HTML 원본의 PDF 정책 준수) / `ResultsHeader` (count + sort 토글 latest↔rating) / 3열 `TitleCard` 그리드. `/api/codes/{COUNTRY|GENRE|PLATFORM}` 병렬 로드.
+  - 상세 (`/titles/:id`): `Hero` (backdropUrl 이 있으면 이미지, 없으면 hero-gradient + 실루엣 / 뒤로가기 + 검색 아이콘 / 제목·별점·리뷰수) / `Tabs` (Synopsis/Cast/Similar, 클릭 시 ref 로 scrollIntoView) / `Accordion` × 3 / `MetaPills` (age/year/EP/대표 장르) / `PlatformRow` (itemKey 기반 NETFLIX/TVING/COUPANG 스타일, 매핑 없으면 미렌더) / `CastList` (role_label 비노출 — v1 정책) / `SimilarList` (3열 그리드 + 자기 자신 제외는 BE 가 보장) / `WatchBar` (watch_now_url 있으면 파란 버튼, 없으면 회색 disabled). 중간에 `BannerCarousel` 공유 노출 — `useBanners()` 로 로드, 없으면 영역 자체 미렌더 (v2 신규).
+  - 비노출 정책 준수: 공유/하트/Account/Cast.role_label/Cast.profile_file_id 모두 렌더링 안 함.
+  - 빌드: `npm install` ✓ / `npx tsc -b` ✓ (에러 0) / `npx vite build` ✓ (73 modules, `dist/assets/index-*.js` 255 KB / gzip 80 KB, CSS 19 KB / gzip 5 KB).
+
+- **섹션 5 완료** (2026-04-19) — 마감:
+  - [projects/prototype/schema.md](../../projects/prototype/schema.md) 작성 — 14개 테이블 (공통 자동 3 + 도메인 11), 관계도, UNIQUE 9건, v2 반영 교훈 (#15/#17/#19/#20) 요약.
+  - [log/2026-04-19_prototype_v2.md](../../log/2026-04-19_prototype_v2.md) 빌드 로그 작성 — 5세션 합산 소요 시간/토큰, v1 대비 v2 변경 7건 표, 스모크 결과 테이블, 실행 방법.
+  - BE 스모크 (2 BE, FE 는 `vite build` 로 대체):
+    * user BE (3.48s 기동) — `/api/home` (sections 3건 seed 복원) / `/api/banners` (`[]`) / `/api/titles?page=1&size=5` (empty page) / `/api/codes/COUNTRY` (4건) 모두 200.
+    * admin BE (3.43s 기동, **ddl-auto=validate 통과** = `@Lob` 단독 매핑이 재생성 결과에 정확히 반영) — `POST /api/admin/auth/login (admin/admin123)` 200 + 세션 쿠키 / `/me` 200 / `/api/admin/banners?page=1&size=20` 200 / `/api/admin/sections` 3건 (v2 신규 display_name_ko/en/sub_label 포함) / `/api/admin/titles?page=1&size=5` 200.
+    * 스모크 후 양쪽 BE 종료 (포트 8082/8083 freed).
+  - 신규 하네스 교훈: 없음 (v2 는 v1 의 #19/#20 을 하네스 규칙으로 승격시키는 검증 사이클이었고, 재생성이 그 승격이 올바름을 실증).
+
+### 재생성 최종 산출물
+
+| 항목 | 경로/비고 |
+|------|---------|
+| 코드 | [projects/prototype/](../../projects/prototype/) (backend/{user,admin} + frontend/{user,admin} + data + storage) |
+| 스키마 | [projects/prototype/schema.md](../../projects/prototype/schema.md) — 14 테이블 |
+| 빌드 로그 | [log/2026-04-19_prototype_v2.md](../../log/2026-04-19_prototype_v2.md) |
+| BE 빌드 | 양쪽 `./gradlew build -x test` BUILD SUCCESSFUL |
+| FE 빌드 | user 73 modules / 255 KB (gzip 80 KB) · admin 97 modules / 290 KB (gzip 88 KB) |
+| 스모크 | BE 2개 기동 ✓ / 9 엔드포인트 200 ✓ / admin validate 통과 ✓ |
+
+### 다음 단계
+
+v2 재생성 사이클 종료. 새 작업은:
+- v3 요구사항이 들어오면 `spec-requests/prototype/prototype.v3.md` 로 수집 → discovery 스킬 → YML 생성.
+- 기존 v2 코드에 긴급 패치가 필요하면 `skills/update-incremental.md`.
+- 버전 변경 없이 재생성만 반복하려면 `skills/regenerate.md` 를 이 log.md 의 "재생성 최종 산출물" 을 기준으로 다시 착수.
+
+---
 
 ---
 
 ## changelog
+
+### v2 — 2026-04-19 (증분 수정 — 버그 패치, 미적용)
+
+**정정 사항**
+1. `Title.synopsis` 엔티티 매핑을 `@Lob + columnDefinition="TEXT"` 에서 `@Lob` 단독으로 변경.
+   - v1 생성 코드의 조합이 H2 v2 에서 VARCHAR 로 저장되어 admin 백엔드
+     (ddl-auto=validate) 기동 시 `expecting [text (Types#CLOB)]` 로 실패.
+2. `TitleAdminService.replace{Genres,Platforms,Similar,Cast}` — 파생
+   `deleteByTitleId()` 직후 동일 트랜잭션에서 `save()` 호출 시 Hibernate 가
+   INSERT 를 DELETE 보다 먼저 flush 하여 UNIQUE 제약 위반(예:
+   `UQ_TITLE_GENRE(title_id, genre_code_id)`, `UQ_TITLE_CAST(title_id, cast_id)`)
+   → 작품 수정 시 500 에러. 정정: delete 직후 `repository.flush()` 강제.
+3. `SurveyBanner` 컴포넌트 **전면 삭제** — 관리자가 이미지/문구를 제어할 수 없는
+   반자동 promo UI (원본 HTML 프로토타입 하드코딩) 였음. 사용자 배너는 관리자
+   CRUD 를 거친 `Banner` (BannerCarousel) 한 가지로 단일화.
+   - [HomePage.tsx](../../projects/prototype/frontend/user/src/pages/HomePage.tsx) — SurveyBanner 사용 제거
+   - [TitleDetailPage.tsx](../../projects/prototype/frontend/user/src/pages/TitleDetailPage.tsx) — SurveyBanner 제거
+   - `src/components/home/SurveyBanner.tsx` — 파일 삭제
+
+4. **작품 상세 페이지에 관리자 배너 공유 노출** (원본 Page 5 수정사항 실현).
+   - user BE: `GET /api/banners` 공개 엔드포인트 신설.
+     - [HomeService.getBanners()](../../projects/prototype/backend/user/src/main/java/com/harness/prototype/user/domain/home/service/HomeService.java) 로 로직 분리
+     - [BannerController](../../projects/prototype/backend/user/src/main/java/com/harness/prototype/user/domain/home/controller/BannerController.java) 신설 — `/api/home` 내 banners 와 동일 결과 반환
+   - user FE: [bannerApi.ts](../../projects/prototype/frontend/user/src/api/bannerApi.ts) + [useBanners.ts](../../projects/prototype/frontend/user/src/hooks/useBanners.ts) 신설.
+     [TitleDetailPage](../../projects/prototype/frontend/user/src/pages/TitleDetailPage.tsx) 의 `PlatformRow` 아래에 `BannerCarousel` 재사용으로 노출 (배너 없으면 영역 미렌더).
+
+7. **리스트 행 액션 chip 스타일 통일**.
+   - 공통 컴포넌트 신설: [RowActionChip.tsx](../../projects/prototype/frontend/admin/src/components/common/table/RowActionChip.tsx) — `variant: default | danger`, pill 테두리(`rounded-full border`) + 흰 배경 + hover 톤.
+   - Title / Banner / Cast / Code 리스트의 raw `<button>` → `RowActionChip` 교체.
+   - [harness/template-admin.md](../../harness/template-admin.md) — 공통 컴포넌트 목록 + 리스트 표준 조항에 "rowActions 는 RowActionChip 사용" 추가.
+
+6. **admin 리스트 공통 컴포넌트 일관화** (하네스 리스트 표준 3종 세트 강제).
+   - raw `<table>` → `DataTable` 리팩터링: [SectionListPage](../../projects/prototype/frontend/admin/src/pages/section/SectionListPage.tsx), [CodePage](../../projects/prototype/frontend/admin/src/pages/code/CodePage.tsx).
+   - **SearchFilter + Pagination 도입**: [BannerListPage](../../projects/prototype/frontend/admin/src/pages/banner/BannerListPage.tsx), [CastListPage](../../projects/prototype/frontend/admin/src/pages/cast/CastListPage.tsx), [TitleListPage](../../projects/prototype/frontend/admin/src/pages/title/TitleListPage.tsx).
+   - admin BE 페이징/검색 시그니처 통일 (`JpaSpecificationExecutor` + `PageResponse`):
+     * Banner: `?linkUrl&visible&page&size`
+     * Cast: `?name&active&page&size`
+     * Title: `?q&active&page&size`
+   - FE 계약 정비: bannerApi / castApi / titleApi 의 `list*` 가 params 객체 + `PageResponse` 반환. 호출부 일괄 업데이트 (Dashboard / CastEditor / SimilarTitlesEditor).
+   - 하네스: [template-admin.md](../../harness/template-admin.md) 에 "리스트 페이지 표준 구성 (SearchFilter + DataTable + Pagination)" 조항 신설. Seed 고정 리스트(Section 등)만 Pagination/SearchFilter 생략 허용.
+
+5. **섹션 노출 관리 — 노출명/서브 라벨 편집 기능 추가**.
+   - 관리자에서 섹션의 `display_name_ko`, `display_name_en`, `sub_label` 을 인라인 편집(blur 저장).
+   - `section_key` 는 자동 로직 식별자(`NEW_RELEASE`/`TRENDS`/`KOREA_PICK`) 라 read-only 유지.
+   - admin BE: [Section.java](../../projects/prototype/backend/admin/src/main/java/com/harness/prototype/admin/domain/section/entity/Section.java) `update()` 시그니처 확장, [SectionUpdateRequest](../../projects/prototype/backend/admin/src/main/java/com/harness/prototype/admin/domain/section/dto/SectionUpdateRequest.java) 에 3개 필드 추가(@NotBlank/@Size).
+   - admin FE: [SectionListPage](../../projects/prototype/frontend/admin/src/pages/section/SectionListPage.tsx) 테이블에 KO/EN/서브라벨 `TextInput` 컬럼 추가, [types/section.ts](../../projects/prototype/frontend/admin/src/types/section.ts) `SectionUpdateRequest` 확장.
+
+6. **admin 공통 레이아웃 — 로그아웃 위치 이관 + 관리자 이름 이중 표기 제거** (하네스 공통 규칙 변경).
+   - [Sidebar.tsx](../../projects/prototype/frontend/admin/src/components/layout/Sidebar.tsx) — 하단 카드에서 로그아웃 버튼 제거 (이름 + 로그인 ID 만 남김).
+   - [Topbar.tsx](../../projects/prototype/frontend/admin/src/components/layout/Topbar.tsx) — 기존 이름 표시 제거, **로그아웃 아이콘 버튼만** 배치 (라벨 없음, aria-label/title 로 접근성). 관리자 이름은 Sidebar 하단 카드로 단일화.
+   - [harness/template-admin.md](../../harness/template-admin.md) — Sidebar/Topbar 예시 + 규칙 조문 업데이트 ("관리자 이름은 Topbar 에 표시하지 않음"). 재생성 시 모든 admin 프로젝트에 반영.
+
+**v1 코드 반영 상태**
+- 두 `Title.java` — 수동 정정 반영됨.
+- [TitleAdminService.java](../../projects/prototype/backend/admin/src/main/java/com/harness/prototype/admin/domain/title/service/TitleAdminService.java) — 4개 replace 메서드에 `flush()` 추가.
+- `SurveyBanner.tsx` — 파일 삭제 + HomePage/TitleDetailPage 에서 사용 제거.
+- user BE: `/api/banners` 공개 엔드포인트 신설 (HomeService.getBanners + BannerController).
+- user FE: bannerApi.ts / useBanners.ts 신설, TitleDetailPage 에서 BannerCarousel 재사용.
+- v2 는 동일 결과가 **하네스 규칙**으로 자동 생성되도록 앵커 역할.
+
+**하네스 동반 수정**
+- [harness/coding.md](../../harness/coding.md) Entity 패턴 샘플 업데이트 — `@Lob` 단독 예시로.
+- [skills/lessons-learned.md](../../skills/lessons-learned.md)
+  - #19 추가 — H2 에서 `@Lob(String)` 은 `columnDefinition` 미지정 필수.
+  - #20 추가 — derived `deleteByXxx` 이후 같은 tx 에서 `save` 호출하려면 `flush()` 먼저.
+
+**적용 상태**
+- YML: 완료 (specs/prototype/prototype.v2.yml)
+- 코드: v1 디렉토리에서 이미 수동 정정 반영 (재생성 불필요)
+- 재생성 시 동일 결과가 보장되도록 하네스 동기화 완료
+
+**무엇이 변하지 않았나**
+- 엔티티 필드 리스트 / API / 페이지 / 권한 / 모듈 구성 / 포트 / DB 전략 — 모두 v1 동일.
+
+---
 
 ### v1 — 2026-04-17 (신규 생성)
 

@@ -73,7 +73,12 @@ public class Notice {
     @Column(nullable = false, length = 200)
     private String title;
 
-    @Column(columnDefinition = "TEXT")
+    // 긴 텍스트(YML: type: Text) 는 @Lob 단독. columnDefinition 지정 금지.
+    // 이유: H2 v2 는 columnDefinition="TEXT" 를 VARCHAR 로 저장하지만
+    //       @Lob(String) 은 validate 시 Types#CLOB 을 기대 → split backend 에서 mismatch.
+    //       (lessons-learned #19)
+    @Lob
+    @Column(name = "content")
     private String content;
 
     @Column(name = "created_at", nullable = false, updatable = false)
