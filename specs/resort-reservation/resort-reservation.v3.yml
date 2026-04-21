@@ -1,0 +1,1242 @@
+## -------------------------------------------------------
+## 리조트 예약 시스템 — 기능 명세 (v3)
+## 원본: spec-requests/resort-reservation/resort-reservation.v3.md
+##       (v2 와 기능/엔티티/API/페이지 동일. v3 는 버그 패치 + 하네스 규칙 변경만)
+## 자료: spec-requests/resort-reservation/design_handoff_byul_resort/
+##       (Byul Resort Version A — Hi-fi JSX 프로토타입, Tailwind 재구성)
+## -------------------------------------------------------
+
+project:
+  id: resort-reservation
+  name: 리조트 예약 시스템
+  description: 리조트 객실 예약 시스템 (user + admin, 일자별 재고/회원유형별 요금, 다박 예약)
+  version: 3
+
+  modules:
+    frontend:
+      - key: user
+        port: 5176
+        template: user
+        ui_source: spec-requests/resort-reservation/design_handoff_byul_resort/
+        proxy_target: user
+      - key: admin
+        port: 5179
+        template: admin
+        proxy_target: admin
+
+    backend:
+      strategy: split
+      apps:
+        - { key: user,  port: 8081 }
+        - { key: admin, port: 8084 }
+
+    database:
+      strategy: shared
+      shared_owner: user
+
+  database:
+    name: resortdb
+
+## -------------------------------------------------------
+## 0. 파일 업로드 정책 (harness/files.md 재정의)
+## -------------------------------------------------------
+files:
+  max_size_mb: 10
+  allowed_mime: ["image/png", "image/jpeg", "image/webp"]
+  upload_auth: true
+  download_auth: false
+
+## -------------------------------------------------------
+## 1. changelog
+## -------------------------------------------------------
+changelog:
+  - version: 3
+    date: 2026-04-21
+    generation: 증분 수정 (버그 패치 + 하네스 규칙 추가)
+    changes:
+      - 버그 패치 — 사용자 회원가입 페이지 (`frontend/user/src/pages/SignupPage.tsx`)
+        에서 input 한 글자 입력 시 포커스 손실 + 한글 IME 합성 중단 발생.
+        원인은 SignupPage 함수 본문 안에서 보조 컴포넌트 `Field` 를 정의한 것이며,
+        매 렌더마다 새 컴포넌트 type 이 만들어져 자식 `<input>` 이 unmount/remount
+        되면서 포커스를 잃었다.
+      - 수정 — `Field` 컴포넌트와 `inputClass` 를 SignupPage 함수 외부 (모듈 최상위)
+        로 추출. props 인터페이스를 별도 정의하여 한 번만 컴파일·재사용되도록 변경.
+      - 하네스 규칙 변경 (재발 방지)
+          * harness/coding.md React 패턴 섹션 — "컴포넌트 정의는 모듈 최상위에서만
+            (다른 컴포넌트 내부에 정의 금지)" 규칙 + 실제 anti-pattern / 정답 코드
+            예시 추가.
+          * skills/lessons-learned.md #21 신설 — 동일 사례를 재현 코드 + 수정 코드
+            로 정리. 관련 anti-pattern (`useMemo` 안 컴포넌트 정의, props 로
+            컴포넌트 타입 동적 전달) 도 함께 명시.
+      - 검증 — `frontend/user/src/pages/` 전체 grep 으로 동일 패턴 잔존 여부 확인,
+        SignupPage 외 매치 없음.
+
+      - SearchBox UI 재구현 — design_handoff_byul_resort/versionA-search.jsx 의
+        ASearchBox + ACalendar 패턴 (popover + 듀얼 캘린더 + 인원 카운터) 으로 전면
+        교체. v2 구현은 단순 `<input type="date">` 4 칸이라 디자인 의도와 차이가
+        컸다. 자세한 컴포넌트 명세는 아래 `shared_components.SearchBox` 참조.
+
+      - 예약 Step 1 UI 재구현 — design_handoff_byul_resort/versionA-flow.jsx 기준
+        으로 "머무실 날짜를 선택하세요" 타이틀 + 임베디드 DualCalendar + 별도
+        "투숙 인원" 카드 + 우측 YourStayCard sticky aside 레이아웃으로 재작성.
+        v2 구현은 `<input type="date">` 두 칸 + 단순 카운터라 디자인과 큰 차이.
+        Step 1 의 우측 사이드바는 좌측 selection 을 실시간 반영하되 **가격은
+        노출하지 않음** (가격 계산은 Step 2 진입 시점의 validation 응답으로만).
+        상단에 풀폭 StepIndicator 띠 (●1 날짜·인원 ─── ○2 투숙객 정보) 추가.
+
+      - "예약자와 동일" 체크박스 테마 정렬 — 네이티브 `<input type=checkbox>`
+        의 브라우저 기본 파란색이 사이트 ocean 테마와 충돌. hidden native input
+        + 시각적 박스 SVG 체크 패턴 (ThemedCheckbox) 으로 교체. 자세한 패턴은
+        아래 `shared_components.ThemedCheckbox` 참조. 동일 패턴이 필요한 모든
+        폼에서 재사용 가능.
+
+      - 마이페이지 본인 예약 취소 기능 추가
+          * 신규 API — `PUT /api/reservations/by-no/{reservationNo}/cancel` (user 모듈)
+            * 백엔드 검증 — 소유자 일치 + status=CONFIRMED + checkInDate >= today
+            * 위반 시 4xx + 한글 에러 메시지 (이미 지난 일정 / 이미 취소됨 / 본인 예약만)
+            * 성공 시 status=CANCELLED + 해당 기간 RoomInventory.stock_count += 1
+          * 프론트 — 마이페이지 카드 하단에 "상세 보기" + (조건부) "예약 취소"
+            버튼. 취소 버튼 노출 조건은 백엔드와 동일. 클릭 시 ConfirmDialog 노출.
+          * 새 컴포넌트 — `frontend/user/src/components/common/ConfirmDialog.tsx`
+            (gold 상단 라인, danger variant 는 coral, primary variant 는 ocean).
+          * MyPage 카드 구조 변경 — 기존엔 카드 전체가 `<Link>` 였으나 카드 안에
+            버튼이 들어가야 하므로 카드 컨테이너를 `<div>` 로 바꾸고 객실명·예약번호
+            만 `<Link>` 로 처리.
+      - 신규 컴포넌트 추가 — `frontend/user/src/components/DualCalendar.tsx` (현재월 +
+        다음월 표시, 일/토 색상 구분, 선택일 채움원, 사이 일자 seafoam highlight,
+        과거·6개월 초과 disabled).
+      - utils 확장 — `frontend/user/src/utils/dates.ts` 에 `formatKoCompact("YYYY-MM-DD")
+        → "5월 12일 화"` 와 `dowLabel(0~6) → "일"~"토"` 추가.
+      - 기능/엔티티/API/페이지(라우트)/권한/seed 변경 없음. UI 컴포넌트 동작만 변경.
+
+## -------------------------------------------------------
+## 1.5 공용 프론트엔드 컴포넌트 (user 모듈)
+##     v3 부터 명시. 재생성 시 아래 명세대로 구현되어야 함.
+## -------------------------------------------------------
+shared_components:
+  SearchBox:
+    file: frontend/user/src/components/SearchBox.tsx
+    ui_source: spec-requests/resort-reservation/design_handoff_byul_resort/versionA-search.jsx
+    description: |
+      홈 / 객실 리스트 페이지 공용. 닫힌 상태는 4 셀(체크인 / 체크아웃 / 인원 / 객실 검색 버튼)
+      가로 배치. 검색 버튼 외 셀 클릭 시 popover 열림.
+    props:
+      - { name: checkIn,    type: string,         note: "'YYYY-MM-DD'" }
+      - { name: checkOut,   type: string,         note: "'YYYY-MM-DD'" }
+      - { name: adults,     type: number,         note: "≥ 1" }
+      - { name: children,   type: number,         note: "≥ 0" }
+      - { name: onChange,   type: "(next) => void", note: "전체 4개 값을 commit (popover 내부에서 즉시 반영, 별도 confirm 단계 없음)" }
+      - { name: onSubmit,   type: "() => void",   note: "검색 버튼 클릭" }
+      - { name: submitLabel, type: string,        note: "기본 '객실 검색'" }
+    closed_state:
+      layout: 4 cells in a row (white bg, gold/line border, shadow-md, radius-md)
+      cells:
+        - { key: 체크인,    value: "formatKoCompact(checkIn)  예: '5월 12일 화'" }
+        - { key: 체크아웃,  value: "formatKoCompact(checkOut)" }
+        - { key: 인원,      value: "'성인 N · 어린이 M' (어린이 0 이면 '성인 N')" }
+        - { key: 객실 검색, value: "ocean bg + 흰색 텍스트 + 돋보기 SVG" }
+      cell_label_style: 11px tracking-wider mist 컬러 uppercase
+      cell_value_style: font-display 18px ink 컬러
+    popover:
+      open_when: 체크인/체크아웃 셀 → 'date' 탭, 인원 셀 → 'people' 탭
+      close_when:
+        - 외부 클릭
+        - ESC 키
+        - "확인 버튼"
+        - "검색 버튼" (자동 닫힘 후 onSubmit)
+      style: "absolute below box, mt-2, white bg, shadow-lg, gold 3px 상단 라인"
+      tabs:
+        - 날짜 (`date`)
+        - 인원 (`people`)
+      hint_right_text:
+        date: 날짜를 다시 고르려면 원하는 날짜를 클릭하세요
+        people: 투숙 인원을 선택하세요
+      footer:
+        - { type: text_button, label: 초기화, onClick: "현재 탭만 reset (date → 오늘+내일, people → 성인 2 / 어린이 0)" }
+        - { type: button,      label: 확인, style: "ocean bg + 흰색", onClick: "popover 닫기 (값은 이미 onChange 로 반영됨)" }
+    date_tab:
+      uses: DualCalendar 컴포넌트
+      pick_logic: |
+        - 둘 다 비었거나 둘 다 있는 상태에서 클릭 → 새로 시작 (체크인만 설정, 체크아웃 클리어)
+        - 클릭 날짜 ≤ 기존 체크인 → 새 체크인으로 시작 (체크아웃 클리어)
+        - 클릭 날짜 > 체크인 → 체크아웃 설정. nights 1~7 자동 클램프 (8박 이상이면 +7일로)
+      constraints:
+        min_date: today (오늘 이전 클릭 비활성)
+        max_date: today + 6 months
+        nights: 1 ~ 7
+    people_tab:
+      rows:
+        - { label: 성인,   hint: 만 13세 이상, min: 1, default: 2 }
+        - { label: 어린이, hint: 만 2~12세,    min: 0, default: 0 }
+      counter: "원형(rounded-full) − / + 버튼, min 도달 시 − 버튼 disabled (opacity-30)"
+
+  DualCalendar:
+    file: frontend/user/src/components/DualCalendar.tsx
+    description: |
+      현재월 + 다음월 두 달 가로 배치 (md 미만 모바일은 세로 스택).
+      각 월 상단에 "YYYY년 M월" 헤더, 그 아래 일~토 요일행, 그 아래 6주 grid.
+      SearchBox popover 안에서도, 예약 Step 1 페이지에서도 동일 컴포넌트 재사용.
+    props:
+      - { name: checkIn,   type: "string | null" }
+      - { name: checkOut,  type: "string | null" }
+      - { name: baseMonth, type: Date,            note: "첫 번째 달 기준" }
+      - { name: minDate,   type: string }
+      - { name: maxDate,   type: string }
+      - { name: onPickDate, type: "(dateStr: string) => void" }
+    cell_styles:
+      default: "h-9 w-9 글씨 — 일요일 coral, 토요일 ocean, 평일 ink"
+      hover: "rounded-full + bg-cream"
+      check_in_or_out: "filled circle (bg-ocean), 흰색 글씨, font-semibold"
+      between: "rgba(134,184,177,0.35) 배경 (seafoam 35%)"
+      disabled: "text-mist + cursor-not-allowed (클릭 비활성)"
+
+  ThemedCheckbox:
+    description: |
+      네이티브 `<input type="checkbox">` 의 브라우저 기본 색(파란색) 이 사이트 테마(ocean)
+      와 충돌하므로 **사용 금지**. 대신 hidden native input + 시각적 박스 SVG 체크 패턴 사용.
+      v3 부터 적용. 동일 패턴이 필요한 모든 폼에서 재사용.
+    pattern: |
+      <label className="inline-flex items-center gap-2.5 cursor-pointer select-none px-3 py-2 text-sm
+                        border transition-colors {checked ? 'border-ocean bg-ocean/5 text-ocean'
+                                                          : 'border-line text-slateBrand hover:bg-cream'}"
+             style={{ borderRadius: 'var(--radius-sm)' }}>
+        <span className="w-4 h-4 inline-flex items-center justify-center border
+                         {checked ? 'bg-ocean border-ocean' : 'border-mist'}"
+              style={{ borderRadius: '2px' }}>
+          {checked && (
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="white" strokeWidth="2.5">
+              <path d="M3 8.5l3 3 7-7" />
+            </svg>
+          )}
+        </span>
+        <input type="checkbox" className="sr-only" checked={checked} onChange={...} />
+        {label}
+      </label>
+    forbidden: |
+      ❌ <input type="checkbox" /> 단독 사용 — 브라우저 기본 파란색 노출.
+      ❌ Tailwind `accent-{color}` 만으로 해결도 비권장 (브라우저별 렌더링 차이).
+      ✅ 위 ThemedCheckbox 패턴 재사용.
+
+  ConfirmDialog:
+    file: frontend/user/src/components/common/ConfirmDialog.tsx
+    description: |
+      모달 형태의 확인 대화상자. 마이페이지 예약 취소·기타 destructive 액션에서 사용.
+      gold 3px 상단 라인 + 흰 배경. 외부 클릭 시 닫히지 않음 (의도적, 명시적 선택 강제).
+    props:
+      - { name: open,         type: boolean }
+      - { name: title,        type: string,  default: "'확인'" }
+      - { name: message,      type: string,  note: "줄바꿈은 \\n 으로, 컴포넌트는 whitespace-pre-line 로 렌더" }
+      - { name: confirmLabel, type: string,  default: "'확인'" }
+      - { name: cancelLabel,  type: string,  default: "'취소'" }
+      - { name: variant,      type: "'danger' | 'primary'", default: "'primary'", note: "danger → coral, primary → ocean" }
+      - { name: onConfirm,    type: "() => void" }
+      - { name: onCancel,     type: "() => void" }
+    style: |
+      Backdrop: fixed inset-0 bg-black/40 z-50.
+      Card: max-w-sm 흰 배경, gold 3px 상단 라인, padding 6.
+      Title: font-display 18px ink.
+      Message: text-sm slateBrand whitespace-pre-line leading-relaxed.
+      Footer: 우측 정렬, [취소(border-line text-slateBrand)] [확인(variant 컬러 bg + 흰 텍스트)].
+
+  YourStayCard:
+    description: |
+      예약 페이지 우측 sticky 사이드바. gold 3px 상단 라인 + 흰 배경 카드.
+      좌측 본문 selection 변경이 실시간 반영되어야 함 (체크인/체크아웃/인원).
+      Step 단계에 따라 가격 영역 노출 여부 분기.
+    props:
+      - { name: room,       type: "RoomDetail | null", note: "객실 정보" }
+      - { name: variant,    type: "PlaceholderImage variant", note: "썸네일 없을 때 그라디언트" }
+      - { name: checkIn,    type: string }
+      - { name: checkOut,   type: string }
+      - { name: adults,     type: number }
+      - { name: children,   type: number }
+      - { name: validation, type: "ReservationValidateResponse | null", note: "Step 1 → null (가격 영역 미노출), Step 2 → 응답 객체 (가격 breakdown 노출)" }
+    layout:
+      header:
+        - "label-en: YOUR STAY (gold, tracking-[3px], uppercase)"
+        - "분양회원 뱃지 (validation.memberType === 'PARCEL' 일 때만): ★ 분양회원 전용가 적용 / 골드 15% bg + 골드 텍스트"
+      room_block: "썸네일 80x80 (없으면 PlaceholderImage variant) + 객실명(font-display 18px) + 뷰 + 침대"
+      summary:
+        - "체크인 / 체크아웃 / 인원  →  YYYY.MM.DD 또는 '성인 N · 어린이 M' 우측 정렬"
+        - "Step 1 (validation == null): 여기서 끝. 가격 영역 미노출"
+        - "Step 2 (validation 채워짐): 아래 가격 영역 추가"
+      pricing_block_step2:
+        - "일반회원: defaultPrice × nights → 총 결제 금액"
+        - "분양회원: defaultPrice × nights (취소선) → '분양회원 할인 -X원' (gold) → 분양회원가 × nights → 총 결제 금액"
+        - "총 결제 금액 라벨: 16px ink medium / 금액: font-display 24px ocean"
+    constraint: |
+      Step 1 에서 가격이 노출되면 안 됨 — validation 호출은 "다음 단계" 클릭 시에만.
+      좌측 캘린더에서 날짜 변경 → 우측 카드의 체크인/체크아웃/인원만 즉시 갱신,
+      가격은 변경되지 않음 (Step 2 진입 시점에 한 번만 계산).
+
+  - version: 2
+    date: 2026-04-21
+    generation: 신규 생성 (v2)
+    changes:
+      - 어드민 모듈 신규 추가 (Case 3 — split backend + shared DB, shared_owner=user)
+      - 사용자/관리자 테이블 분리 — role 컬럼 제거, Member(user) / AdminUser(admin) + 세션 쿠키 분리(USER_SID/ADMIN_SID)
+      - 사용자 프론트 디자인 리뉴얼 (Byul Resort Version A, Tailwind 재구성)
+      - 일자별 재고 도입 (RoomInventory)
+      - 일자별 + 회원유형별 요금 도입 (RoomDailyPrice), 회원유형 무관 기본가 Room.default_price
+      - 예약 다박 허용 (1~7박), 오늘 ~ +6개월, 성인/어린이 인원 분리
+      - 예약 일자별 요금 스냅샷 저장 (ReservationDailyPrice)
+      - 예약 플로우 2-step (날짜·인원 → 투숙객). 결제 Step 없음
+      - 객실 이미지 확장 — 썸네일 1장 + 갤러리 최대 5장 (공통 파일업로드)
+      - 공지사항(Notice) 신규 추가 — user 조회 / admin CRUD
+      - 객실 메타 확장 — 카테고리/영문명/설명/침대/크기/인원/전망/뱃지/어메니티
+      - v1 의 RoomPrice(회원유형별 고정가) 폐기 → default_price + RoomDailyPrice 로 대체
+  - version: 1
+    date: 2026-04-16
+    generation: 신규 생성
+    changes:
+      - 초기 버전 (회원가입, 로그인, 객실 조회, 객실 예약, 예약 확인)
+      - 회원 유형(일반/분양) 분기 및 회원별 객실/요금 차등 규칙
+
+## -------------------------------------------------------
+## 2. 엔티티
+## -------------------------------------------------------
+##
+## 주의:
+##   - StoredFile / CodeGroup / CodeItem 은 공통 하네스 규칙에 의해 자동 주입 (명시하지 않음)
+##     * harness/files.md, harness/common-code.md 참조
+##   - split backend + shared DB 이므로 shared_owner(user) 가 DDL 주도권.
+##     admin 백엔드는 ddl-auto=validate 로 동일 스키마를 읽는다.
+##   - Member 는 user 백엔드만 코드 보유, AdminUser 는 admin 백엔드만 코드 보유.
+##     그 외 도메인(Room, Reservation, Notice, RoomInventory, ...) 은 양쪽 백엔드 모두에
+##     엔티티 복제 생성 — 각 백엔드의 Service 에서 필요한 API 만 노출한다.
+##
+entities:
+
+  ## ==== 사용자 계정 (user 백엔드 전용) ====
+  Member:
+    table: member
+    description: 일반 사용자 (일반 / 분양 회원). user 백엔드에서만 관리
+    backend_scope: [user]
+    fields:
+      - { name: member_id,         type: Long,      pk: true, auto: true }
+      - { name: login_id,          type: String,    required: true, unique: true, label: 아이디 }
+      - { name: password,          type: String,    required: true, min: 8, label: 비밀번호 }
+      - { name: member_name,       type: String,    required: true, label: 이름 }
+      - { name: phone,             type: String,    required: true, label: 연락처 }
+      - { name: email,             type: String,    required: false, label: 이메일 }
+      - { name: parcel_member_no,  type: String,    required: false, label: 분양회원번호 }
+      - { name: member_type,       type: Enum,      enum: MemberType, derived: true, label: 회원유형 }
+      - { name: created_at,        type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,        type: Timestamp, auto: true, audit: true }
+    enums:
+      MemberType: [GENERAL, PARCEL]   # 일반, 분양
+    derived_rules:
+      member_type: "parcel_member_no 가 존재하면 PARCEL, 없으면 GENERAL"
+    validations:
+      - { field: login_id, rule: unique,  message: 이미 사용 중인 아이디입니다 }
+      - { field: password, rule: "min:8", message: 비밀번호는 8자리 이상이어야 합니다 }
+      - { field: password, rule: "regex:^(?=.*[a-zA-Z])(?=.*\\d).+$", message: 비밀번호는 영문과 숫자를 포함해야 합니다 }
+      - { field: phone,    rule: "regex:^01[016789]-?\\d{3,4}-?\\d{4}$", message: 연락처 형식이 올바르지 않습니다 }
+      - { field: email,    rule: email,   message: 이메일 형식이 올바르지 않습니다, when: provided }
+      # parcel_member_no 는 입력 여부만 판단 (별도 형식 검증 없음)
+
+  ## ==== 관리자 계정 (admin 백엔드 전용) ====
+  AdminUser:
+    table: admin_user
+    description: 관리자 계정. admin 백엔드에서만 관리 (Member 와 별도 테이블)
+    backend_scope: [admin]
+    fields:
+      - { name: admin_user_id, type: Long,      pk: true, auto: true }
+      - { name: login_id,      type: String,    required: true, unique: true, label: 아이디 }
+      - { name: password,      type: String,    required: true, min: 8, label: 비밀번호 }
+      - { name: admin_name,    type: String,    required: true, label: 이름 }
+      - { name: created_at,    type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,    type: Timestamp, auto: true, audit: true }
+    validations:
+      - { field: login_id, rule: unique,  message: 이미 사용 중인 아이디입니다 }
+      - { field: password, rule: "min:8", message: 비밀번호는 8자리 이상이어야 합니다 }
+
+  ## ==== 객실 ====
+  Room:
+    table: room
+    description: 객실 마스터 (기본 정보 + 기본 재고/요금 fallback)
+    fields:
+      - { name: room_id,            type: Long,      pk: true, auto: true }
+      - { name: room_code,          type: String,    required: true, unique: true, label: 객실코드 }
+      - { name: room_name,          type: String,    required: true, label: 객실명 }
+      - { name: en_name,            type: String,    required: false, label: 영문명 }
+      - { name: category_code_id,   type: Long,      fk: CodeItem, required: true, code_group: ROOM_CATEGORY, label: 카테고리 }
+      - { name: description,        type: String,    required: false, lob: true, label: 소개 }
+      - { name: bed,                type: String,    required: false, label: 침대 }
+      - { name: size_sqm,           type: Integer,   required: false, label: 크기(㎡) }
+      - { name: capacity,           type: Integer,   required: true, default: 2, label: 최대 인원 }
+      - { name: view_name,          type: String,    required: false, label: 전망 }
+      - { name: default_stock,      type: Integer,   required: true, default: 0, label: 기본 재고 }
+      - { name: default_price,      type: Integer,   required: true, default: 0, label: 기본 요금(회원유형 무관) }
+      - { name: thumbnail_file_id,  type: Long,      fk: StoredFile, required: false, label: 리스트 썸네일 }
+      - { name: badge_code_id,      type: Long,      fk: CodeItem, required: false, code_group: ROOM_BADGE, label: 뱃지 }
+      - { name: is_active,          type: Boolean,   required: true, default: true, label: 노출 여부 }
+      - { name: created_at,         type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,         type: Timestamp, auto: true, audit: true }
+    relations:
+      - { entity: RoomImage,       type: one-to-many, mapped_by: room }
+      - { entity: RoomAmenity,     type: one-to-many, mapped_by: room }
+      - { entity: RoomInventory,   type: one-to-many, mapped_by: room }
+      - { entity: RoomDailyPrice,  type: one-to-many, mapped_by: room }
+      - { entity: RoomPermission,  type: one-to-many, mapped_by: room }
+
+  ## ==== 객실 갤러리 (최대 5장) ====
+  RoomImage:
+    table: room_image
+    description: 객실 상세 갤러리 (thumbnail 은 Room.thumbnail_file_id 별도)
+    fields:
+      - { name: room_image_id, type: Long,      pk: true, auto: true }
+      - { name: room_id,       type: Long,      fk: Room, required: true }
+      - { name: image_file_id, type: Long,      fk: StoredFile, required: true, label: 이미지 }
+      - { name: sort_order,    type: Integer,   required: true, default: 0, label: 노출 순서 }
+      - { name: created_at,    type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,    type: Timestamp, auto: true, audit: true }
+    business_rules:
+      - 객실당 최대 5장 (Service 레이어에서 검증)
+
+  ## ==== 객실 어메니티 (CodeItem 매핑) ====
+  RoomAmenity:
+    table: room_amenity
+    description: 객실별 편의시설 (free-wifi/pool/spa/parking/breakfast 등)
+    fields:
+      - { name: room_amenity_id, type: Long,      pk: true, auto: true }
+      - { name: room_id,         type: Long,      fk: Room, required: true }
+      - { name: amenity_code_id, type: Long,      fk: CodeItem, required: true, code_group: ROOM_AMENITY, label: 편의시설 }
+      - { name: created_at,      type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,      type: Timestamp, auto: true, audit: true }
+    unique_constraints:
+      - [room_id, amenity_code_id]
+
+  ## ==== 객실 일자별 재고 ====
+  RoomInventory:
+    table: room_inventory
+    description: 객실 일자별 재고. 해당 일자 행이 없으면 Room.default_stock 로 fallback
+    fields:
+      - { name: room_inventory_id, type: Long,      pk: true, auto: true }
+      - { name: room_id,           type: Long,      fk: Room, required: true }
+      - { name: stay_date,         type: LocalDate, required: true, label: 일자 }
+      - { name: stock_count,       type: Integer,   required: true, default: 0, label: 재고 }
+      - { name: created_at,        type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,        type: Timestamp, auto: true, audit: true }
+    unique_constraints:
+      - [room_id, stay_date]
+    business_rules:
+      - 예약 확정 시 해당 기간 각 일자의 stock_count -= 1
+      - 행이 없으면 Room.default_stock 으로 간주 (확정 시에는 행을 생성하여 차감)
+      - 예약 취소 시 해당 기간 각 일자의 stock_count += 1
+
+  ## ==== 객실 일자별 + 회원유형별 요금 ====
+  RoomDailyPrice:
+    table: room_daily_price
+    description: 객실 일자별 + 회원유형별 요금. 해당 (일자, 회원유형) 행이 없으면 Room.default_price 로 fallback
+    fields:
+      - { name: room_daily_price_id, type: Long,      pk: true, auto: true }
+      - { name: room_id,             type: Long,      fk: Room, required: true }
+      - { name: stay_date,           type: LocalDate, required: true, label: 일자 }
+      - { name: member_type,         type: Enum,      enum: MemberType, required: true, label: 회원유형 }
+      - { name: price,               type: Integer,   required: true, label: 금액 }
+      - { name: created_at,          type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,          type: Timestamp, auto: true, audit: true }
+    unique_constraints:
+      - [room_id, stay_date, member_type]
+    business_rules:
+      - 가격 계산 시 우선순위 — RoomDailyPrice(room, date, memberType) > Room.default_price
+      - default_price 는 회원유형 무관 단일값
+
+  ## ==== 객실 예약 가능 회원유형 ====
+  RoomPermission:
+    table: room_permission
+    description: 객실이 허용하는 회원유형 (일반/분양)
+    fields:
+      - { name: room_permission_id, type: Long,      pk: true, auto: true }
+      - { name: room_id,            type: Long,      fk: Room, required: true }
+      - { name: member_type,        type: Enum,      enum: MemberType, required: true, label: 예약가능 회원유형 }
+      - { name: created_at,         type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,         type: Timestamp, auto: true, audit: true }
+    unique_constraints:
+      - [room_id, member_type]
+
+  ## ==== 예약 ====
+  Reservation:
+    table: reservation
+    description: 예약 (1예약 = 1객실, 1~7박)
+    fields:
+      - { name: reservation_id,      type: Long,      pk: true, auto: true }
+      - { name: reservation_no,      type: String,    unique: true, auto: true, label: 예약번호 }
+      - { name: member_id,           type: Long,      fk: Member, required: true }
+      - { name: room_id,             type: Long,      fk: Room, required: true }
+      - { name: check_in_date,       type: LocalDate, required: true, label: 체크인 }
+      - { name: check_out_date,      type: LocalDate, required: true, label: 체크아웃 }
+      - { name: nights,              type: Integer,   required: true, label: 박수 }
+      - { name: adults,              type: Integer,   required: true, default: 2, label: 성인 }
+      - { name: children,            type: Integer,   required: true, default: 0, label: 어린이 }
+      - { name: guest_name,          type: String,    required: true, label: 투숙자명 }
+      - { name: guest_phone,         type: String,    required: true, label: 투숙자 연락처 }
+      - { name: special_request,     type: String,    required: false, lob: true, label: 요청사항 }
+      - { name: member_type_applied, type: Enum,      enum: MemberType, required: true, label: 적용된 회원유형 }
+      - { name: total_price,         type: Integer,   required: true, label: 총 결제 금액 }
+      - { name: status,              type: Enum,      enum: ReservationStatus, default: CONFIRMED, label: 예약상태 }
+      - { name: reservation_date,    type: LocalDate, auto: true, label: 예약일자 }
+      - { name: created_at,          type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,          type: Timestamp, auto: true, audit: true }
+    enums:
+      ReservationStatus: [CONFIRMED, CANCELLED]   # 확정, 취소
+    relations:
+      - { entity: ReservationDailyPrice, type: one-to-many, mapped_by: reservation }
+    business_rules:
+      - 로그인한 Member 만 예약 생성 가능
+      - 1 ≤ nights ≤ 7, check_out_date - check_in_date == nights
+      - check_in_date 는 오늘 ~ today + 6months 범위
+      - adults ≥ 1, adults + children ≤ Room.capacity
+      - 예약 확정 시 해당 기간 각 일자의 RoomInventory.stock_count -= 1 (없으면 default_stock 기반 행 생성 후 차감)
+      - 예약 취소 시 해당 기간 각 일자의 stock_count += 1
+      - reservation_no 포맷 — `BR-YYYYMMDD-NNNN` (디자인 예시 준수)
+    validations:
+      - { rule: room_permission,    message: "해당 객실은 회원 유형에 따라 예약이 불가합니다" }
+      - { rule: stock_available,    message: "선택한 기간 중 재고가 부족한 날짜가 있습니다" }
+      - { rule: date_range,         message: "체크인은 오늘 ~ 6개월 이내, 체크아웃은 체크인 이후 최대 7박까지 가능합니다" }
+      - { rule: capacity,           message: "선택한 인원이 객실 최대 수용 인원을 초과합니다" }
+
+  ## ==== 예약 일자별 요금 스냅샷 ====
+  ReservationDailyPrice:
+    table: reservation_daily_price
+    description: 예약 시점의 일자별 요금 스냅샷 (후일 가격 변경 무관하게 예약 이력 보존)
+    fields:
+      - { name: reservation_daily_price_id, type: Long,      pk: true, auto: true }
+      - { name: reservation_id,             type: Long,      fk: Reservation, required: true }
+      - { name: stay_date,                  type: LocalDate, required: true, label: 일자 }
+      - { name: price,                      type: Integer,   required: true, label: 금액 }
+      - { name: created_at,                 type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,                 type: Timestamp, auto: true, audit: true }
+    unique_constraints:
+      - [reservation_id, stay_date]
+
+  ## ==== 공지사항 ====
+  Notice:
+    table: notice
+    description: 공지사항 (공지 / 이벤트 / 시설)
+    fields:
+      - { name: notice_id,        type: Long,      pk: true, auto: true }
+      - { name: title,            type: String,    required: true, label: 제목 }
+      - { name: category_code_id, type: Long,      fk: CodeItem, required: true, code_group: NOTICE_CATEGORY, label: 분류 }
+      - { name: content,          type: String,    required: true, lob: true, label: 내용 }
+      - { name: is_pinned,        type: Boolean,   required: true, default: false, label: 상단 고정 }
+      - { name: view_count,       type: Integer,   required: true, default: 0, label: 조회수 }
+      - { name: created_at,       type: Timestamp, auto: true, audit: true }
+      - { name: updated_at,       type: Timestamp, auto: true, audit: true }
+    business_rules:
+      - 사용자 리스트 노출은 is_pinned=true 먼저, 그 다음 created_at DESC
+      - 사용자 상세 조회 시 view_count += 1
+
+## -------------------------------------------------------
+## 3. 공통 코드 seed (harness/common-code.md)
+## -------------------------------------------------------
+code_groups:
+  - group_key: ROOM_CATEGORY
+    label: 객실 카테고리
+    items:
+      - { key: SUITE,    label: 스위트,   sort_order: 10 }
+      - { key: VILLA,    label: 빌라,     sort_order: 20 }
+      - { key: DELUXE,   label: 디럭스,   sort_order: 30 }
+      - { key: FAMILY,   label: 패밀리,   sort_order: 40 }
+      - { key: STANDARD, label: 스탠다드, sort_order: 50 }
+
+  - group_key: ROOM_BADGE
+    label: 객실 뱃지
+    items:
+      - { key: BEST,      label: 베스트,   sort_order: 10 }
+      - { key: SIGNATURE, label: 시그니처, sort_order: 20 }
+      - { key: NEW,       label: 신규,     sort_order: 30 }
+
+  - group_key: ROOM_AMENITY
+    label: 객실 편의시설
+    items:
+      - { key: FREE_WIFI, label: 무료 Wi-Fi, sort_order: 10 }
+      - { key: POOL,      label: 수영장,     sort_order: 20 }
+      - { key: SPA,       label: 스파,       sort_order: 30 }
+      - { key: PARKING,   label: 무료 주차,  sort_order: 40 }
+      - { key: BREAKFAST, label: 조식 포함,  sort_order: 50 }
+
+  - group_key: NOTICE_CATEGORY
+    label: 공지 분류
+    items:
+      - { key: NOTICE,   label: 공지,   sort_order: 10 }
+      - { key: EVENT,    label: 이벤트, sort_order: 20 }
+      - { key: FACILITY, label: 시설,   sort_order: 30 }
+
+## -------------------------------------------------------
+## 4. Seed 데이터
+## -------------------------------------------------------
+seed_data:
+  AdminUser:
+    - { login_id: admin, password: admin1234, admin_name: 관리자 }
+
+  Room:
+    - room_code: OCEAN-SUITE
+      room_name: 오션 스위트
+      en_name: Ocean Suite
+      category_code_key: SUITE
+      description: "탁 트인 바다 전망의 프리미엄 스위트. 프라이빗 테라스와 욕조."
+      bed: 킹베드 1 + 소파베드
+      size_sqm: 68
+      capacity: 4
+      view_name: 오션 프론트
+      default_stock: 3
+      default_price: 520000
+      badge_code_key: BEST
+      is_active: true
+      amenities: [FREE_WIFI, POOL, SPA, PARKING, BREAKFAST]
+      permissions: [GENERAL, PARCEL]
+      daily_prices:
+        - { member_type: GENERAL, price: 520000 }
+        - { member_type: PARCEL,  price: 416000 }
+
+    - room_code: TERRACE-VILLA
+      room_name: 테라스 빌라
+      en_name: Terrace Villa
+      category_code_key: VILLA
+      description: "독립형 빌라 타입. 개별 수영장과 선베드가 마련된 프라이빗 공간."
+      bed: 킹베드 2
+      size_sqm: 92
+      capacity: 4
+      view_name: 프라이빗 풀
+      default_stock: 2
+      default_price: 820000
+      badge_code_key: SIGNATURE
+      is_active: true
+      amenities: [FREE_WIFI, POOL, SPA, PARKING, BREAKFAST]
+      permissions: [PARCEL]
+      daily_prices:
+        - { member_type: PARCEL, price: 656000 }
+
+    - room_code: SUNSET-DELUXE
+      room_name: 선셋 디럭스
+      en_name: Sunset Deluxe
+      category_code_key: DELUXE
+      description: "서향 창으로 바라보는 석양이 아름다운 디럭스룸."
+      bed: 킹베드 1
+      size_sqm: 42
+      capacity: 2
+      view_name: 오션 사이드
+      default_stock: 5
+      default_price: 340000
+      is_active: true
+      amenities: [FREE_WIFI, BREAKFAST, PARKING]
+      permissions: [GENERAL, PARCEL]
+      daily_prices:
+        - { member_type: GENERAL, price: 340000 }
+        - { member_type: PARCEL,  price: 272000 }
+
+    - room_code: GARDEN-TWIN
+      room_name: 가든 트윈
+      en_name: Garden Twin
+      category_code_key: STANDARD
+      description: "정원을 품은 조용한 트윈룸. 가족 여행객에게 인기."
+      bed: 트윈 베드
+      size_sqm: 38
+      capacity: 3
+      view_name: 가든 뷰
+      default_stock: 6
+      default_price: 280000
+      is_active: true
+      amenities: [FREE_WIFI, PARKING, BREAKFAST]
+      permissions: [GENERAL, PARCEL]
+      daily_prices:
+        - { member_type: GENERAL, price: 280000 }
+        - { member_type: PARCEL,  price: 224000 }
+
+    - room_code: FAMILY-SUITE
+      room_name: 패밀리 스위트
+      en_name: Family Suite
+      category_code_key: FAMILY
+      description: "거실이 분리된 2베드룸 구조. 최대 6인까지 편안하게."
+      bed: 킹베드 1 + 트윈 2
+      size_sqm: 78
+      capacity: 6
+      view_name: 오션 사이드
+      default_stock: 2
+      default_price: 620000
+      is_active: true
+      amenities: [FREE_WIFI, POOL, PARKING, BREAKFAST]
+      permissions: [GENERAL, PARCEL]
+      daily_prices:
+        - { member_type: GENERAL, price: 620000 }
+        - { member_type: PARCEL,  price: 496000 }
+
+    - room_code: STANDARD
+      room_name: 스탠다드
+      en_name: Standard
+      category_code_key: STANDARD
+      description: "합리적인 가격의 편안한 스탠다드룸."
+      bed: 더블베드
+      size_sqm: 28
+      capacity: 2
+      view_name: 시티 뷰
+      default_stock: 8
+      default_price: 180000
+      is_active: true
+      amenities: [FREE_WIFI, PARKING]
+      permissions: [GENERAL, PARCEL]
+      daily_prices:
+        - { member_type: GENERAL, price: 180000 }
+        - { member_type: PARCEL,  price: 144000 }
+
+  Notice:
+    - { title: "봄맞이 얼리버드 · 최대 35% 할인 프로모션", category_code_key: EVENT,    is_pinned: true,  content: "봄을 맞이하여 최대 35% 할인 프로모션을 진행합니다." }
+    - { title: "5월 종합 점검에 따른 수영장 이용 안내",     category_code_key: NOTICE,   is_pinned: true,  content: "5월 중 수영장 시설 점검이 진행됩니다." }
+    - { title: "기념일 투숙객을 위한 시그니처 패키지 출시", category_code_key: EVENT,    is_pinned: false, content: "기념일 투숙객을 위한 특별 패키지가 출시되었습니다." }
+    - { title: "객실 내 금연 정책 강화 안내",                category_code_key: NOTICE,   is_pinned: false, content: "모든 객실 내 금연 정책이 강화됩니다." }
+    - { title: "스파 센터 리뉴얼 오픈",                      category_code_key: FACILITY, is_pinned: false, content: "스파 센터가 새롭게 단장하여 오픈하였습니다." }
+
+## -------------------------------------------------------
+## 5. API
+## -------------------------------------------------------
+apis:
+
+  # ==========================================
+  # user 백엔드 (port 8081) — /api/...
+  # ==========================================
+
+  # --- 회원 ---
+  - { method: POST, path: /api/members/signup,            entity: Member,      action: create, auth: false, module: user, description: 회원가입 }
+  - { method: POST, path: /api/members/login,             entity: Member,      action: custom, auth: false, module: user, description: 로그인 (USER_SID 쿠키 발급) }
+  - { method: POST, path: /api/members/logout,            entity: Member,      action: custom, auth: true,  module: user, description: 로그아웃 }
+  - { method: GET,  path: /api/members/me,                entity: Member,      action: custom, auth: true,  module: user, description: 내 정보 (세션) }
+  - { method: GET,  path: /api/members/check-id/{loginId}, entity: Member,      action: custom, auth: false, module: user, description: 아이디 중복 체크 }
+
+  # --- 객실 (user) ---
+  - { method: GET,  path: /api/rooms,                     entity: Room,        action: list,   auth: false, module: user, description: "객실 리스트. 파라미터 없으면 default_price 기반 (메인). checkIn/checkOut/adults/children + 로그인 세션의 회원유형으로 필터링" }
+  - { method: GET,  path: /api/rooms/{id},                entity: Room,        action: detail, auth: false, module: user, description: "객실 상세. 조건이 붙으면 일자별 요금(daily_prices[]) + 예약 가능 여부 포함. 조건 불충족(재고/가격/권한) 시 404 반환하고 프론트는 메인 복귀" }
+
+  # --- 예약 (user) ---
+  - { method: POST, path: /api/reservations/validate,     entity: Reservation, action: custom, auth: true,  module: user, description: "예약 가능 여부 + 일자별 요금 + 총액 계산 (Step1 → Step2 전 검증)" }
+  - { method: POST, path: /api/reservations,              entity: Reservation, action: create, auth: true,  module: user, description: "예약 확정 (Step2 완료 시). 내부에서 validate 재수행 후 insert" }
+  - { method: GET,  path: /api/reservations/my,           entity: Reservation, action: list,   auth: true,  module: user, description: 내 예약 목록 }
+  - { method: GET,  path: /api/reservations/by-no/{reservationNo}, entity: Reservation, action: detail, auth: true, module: user, description: 예약번호 기반 예약 확인 (본인만 조회) }
+  - { method: PUT,  path: /api/reservations/by-no/{reservationNo}/cancel, entity: Reservation, action: custom, auth: true, module: user, description: "본인 예약 취소 (소유 검증 + status=CONFIRMED + checkInDate >= today 만 허용, RoomInventory 복원)" }
+
+  # --- 공지 (user, public) ---
+  - { method: GET,  path: /api/notices,                   entity: Notice,      action: list,   auth: false, module: user, description: 공지 리스트 (카테고리/검색/페이징) }
+  - { method: GET,  path: /api/notices/{id},              entity: Notice,      action: detail, auth: false, module: user, description: "공지 상세 (view_count += 1)" }
+
+  # ==========================================
+  # admin 백엔드 (port 8084) — /api/admin/...
+  # ==========================================
+
+  # --- 관리자 인증 ---
+  - { method: POST, path: /api/admin/auth/login,          entity: AdminUser,   action: custom, auth: false, module: admin, description: 관리자 로그인 (ADMIN_SID 쿠키 발급) }
+  - { method: POST, path: /api/admin/auth/logout,         entity: AdminUser,   action: custom, auth: true,  module: admin, description: 관리자 로그아웃 }
+  - { method: GET,  path: /api/admin/auth/me,             entity: AdminUser,   action: custom, auth: true,  module: admin, description: 관리자 세션 정보 }
+
+  # --- 대시보드 ---
+  - { method: GET,  path: /api/admin/dashboard,           entity: Reservation, action: custom, auth: true,  module: admin, description: "요약 카드 (오늘 체크인 / 이번 달 예약 / 총 회원 수)" }
+
+  # --- 객실 관리 ---
+  - { method: GET,  path: /api/admin/rooms,               entity: Room,        action: list,   auth: true,  module: admin, description: 객실 리스트 (검색/필터/페이징) }
+  - { method: GET,  path: /api/admin/rooms/{id},          entity: Room,        action: detail, auth: true,  module: admin, description: 객실 상세 (이미지/어메니티/권한 포함) }
+  - { method: POST, path: /api/admin/rooms,               entity: Room,        action: create, auth: true,  module: admin, description: 객실 등록 }
+  - { method: PUT,  path: /api/admin/rooms/{id},          entity: Room,        action: update, auth: true,  module: admin, description: 객실 수정 }
+  - { method: DELETE, path: /api/admin/rooms/{id},        entity: Room,        action: delete, auth: true,  module: admin, description: 객실 삭제 }
+
+  # --- 일자별 재고 / 요금 ---
+  - { method: GET,  path: /api/admin/rooms/{id}/calendar, entity: RoomInventory, action: custom, auth: true,  module: admin, description: "일자별 재고 + 회원유형별 요금 조회 (기간 from~to). fallback 값 포함" }
+  - { method: PUT,  path: /api/admin/rooms/{id}/calendar, entity: RoomInventory, action: custom, auth: true,  module: admin, description: "일자별 재고/요금 일괄 설정. Request: { from, to, stock?, prices?: [{memberType, price}] } — 해당 기간 모든 일자에 upsert" }
+
+  # --- 예약 가능 회원유형 ---
+  - { method: GET,  path: /api/admin/rooms/{id}/permissions, entity: RoomPermission, action: list,   auth: true, module: admin, description: 예약 가능 회원유형 조회 }
+  - { method: PUT,  path: /api/admin/rooms/{id}/permissions, entity: RoomPermission, action: custom, auth: true, module: admin, description: "예약 가능 회원유형 교체 (Request: { memberTypes: [GENERAL, PARCEL] })" }
+
+  # --- 회원 ---
+  - { method: GET,  path: /api/admin/members,             entity: Member,      action: list,   auth: true,  module: admin, description: "회원 리스트 (검색: 이름/아이디/연락처/회원유형, 페이징)" }
+  - { method: GET,  path: /api/admin/members/{id},        entity: Member,      action: detail, auth: true,  module: admin, description: 회원 상세 }
+
+  # --- 예약 ---
+  - { method: GET,  path: /api/admin/reservations,        entity: Reservation, action: list,   auth: true,  module: admin, description: "예약 리스트 (필터: 기간/객실/회원/상태, 페이징)" }
+  - { method: GET,  path: /api/admin/reservations/{id},   entity: Reservation, action: detail, auth: true,  module: admin, description: 예약 상세 (일자별 요금 스냅샷 포함) }
+  - { method: PUT,  path: /api/admin/reservations/{id}/cancel, entity: Reservation, action: custom, auth: true, module: admin, description: "예약 취소 (status=CANCELLED + 해당 기간 stock_count += 1)" }
+
+  # --- 공지 ---
+  - { method: GET,    path: /api/admin/notices,           entity: Notice,      action: list,   auth: true,  module: admin, description: 공지 리스트 }
+  - { method: GET,    path: /api/admin/notices/{id},      entity: Notice,      action: detail, auth: true,  module: admin, description: 공지 상세 }
+  - { method: POST,   path: /api/admin/notices,           entity: Notice,      action: create, auth: true,  module: admin, description: 공지 등록 }
+  - { method: PUT,    path: /api/admin/notices/{id},      entity: Notice,      action: update, auth: true,  module: admin, description: 공지 수정 }
+  - { method: DELETE, path: /api/admin/notices/{id},      entity: Notice,      action: delete, auth: true,  module: admin, description: 공지 삭제 }
+
+## -------------------------------------------------------
+## 6. 페이지
+## -------------------------------------------------------
+pages:
+
+  # ==========================================
+  # user 모듈 (frontend key=user, port 5176)
+  # ==========================================
+
+  - name: 메인
+    module: user
+    path: /
+    auth: false
+    nav: false
+    api: [GET /api/rooms]
+    ui_source: spec-requests/resort-reservation/design_handoff_byul_resort/versionA-home.jsx
+    components: [SearchBox]   # → shared_components.SearchBox 명세 따름
+    description: |
+      랜딩 + 히어로 + 검색박스 + 객실 그리드 (default_price 기준).
+      기본 검색조건 프리셋: 오늘 체크인 / 내일 체크아웃 / 성인 2 / 어린이 0.
+      검색박스는 shared_components.SearchBox (popover + 듀얼 캘린더 + 인원 카운터) 사용.
+      절대 `<input type="date">` 4 칸 같은 단순 폼으로 구현하지 말 것.
+      검색 제출 or 객실 카드 클릭 시:
+        - 비로그인 → /login 으로 이동 (redirectTo query 로 원래 경로+조건 보존)
+        - 로그인 → /rooms?checkIn&checkOut&adults&children (검색) 또는
+                   /rooms/:id?checkIn&checkOut&adults&children (카드 클릭)
+
+  - name: 회원가입
+    module: user
+    path: /signup
+    auth: false
+    show_when: logged_out
+    nav_order: 80
+    api: [POST /api/members/signup, GET /api/members/check-id]
+    form_fields:
+      - { field: parcel_member_no, label: 분양회원번호, type: text,     required: false, placeholder: "선택 입력" }
+      - { field: member_name,      label: 이름,         type: text,     required: true }
+      - { field: phone,            label: 연락처,       type: tel,      required: true,  placeholder: "010-0000-0000" }
+      - { field: email,            label: 이메일,       type: email,    required: false }
+      - { field: login_id,         label: 아이디,       type: text,     required: true,  inline_action: 중복확인 }
+      - { field: password,         label: 비밀번호,     type: password, required: true }
+      - { field: password_confirm, label: 비밀번호 확인, type: password, required: true }
+
+  - name: 로그인
+    module: user
+    path: /login
+    auth: false
+    show_when: logged_out
+    nav_order: 90
+    api: [POST /api/members/login]
+    form_fields:
+      - { field: login_id, label: 아이디,   type: text,     required: true }
+      - { field: password, label: 비밀번호, type: password, required: true }
+    error_display: alert
+    description: "성공 시 redirectTo query 있으면 해당 경로로 복귀 (검색조건 보존), 없으면 / 으로"
+
+  - name: 객실 리스트
+    module: user
+    path: /rooms
+    auth: true
+    nav_order: 10
+    api: [GET /api/rooms]
+    ui_source: spec-requests/resort-reservation/design_handoff_byul_resort/versionA-pages.jsx
+    components: [SearchBox]   # → shared_components.SearchBox 명세 따름
+    description: |
+      URL query 의 checkIn/checkOut/adults/children + 세션 회원유형으로 필터링.
+      - RoomPermission 에 회원유형 없음 → 제외
+      - 기간 중 하루라도 재고 부족 → 제외
+      - 기간 중 하루라도 요금 결정 불가 → 제외
+      카테고리 탭(전체/스위트/빌라/디럭스/패밀리/스탠다드) 로 추가 필터링.
+      상단에 shared_components.SearchBox 노출 (홈에서 넘겨받은 조건 prefill,
+      "다시 검색" 라벨로 popover 동일 동작).
+
+  - name: 객실 상세
+    module: user
+    path: /rooms/:id
+    auth: true
+    nav: false
+    api: [GET /api/rooms/{id}]
+    ui_source: spec-requests/resort-reservation/design_handoff_byul_resort/versionA-detail.jsx
+    description: |
+      조건 불충족 시 "예약 할 수 없는 객실입니다" alert 후 / 로 복귀.
+      다박(nights ≥ 2) 이면 일자별 요금 표시 (daily_prices[]).
+      갤러리 + 탭(소개/시설/리뷰/정책) + 우측 sticky 예약 박스 (골드 상단 라인).
+      "예약하기" 버튼 → /booking/:roomId?checkIn&checkOut&adults&children
+
+  - name: 예약
+    module: user
+    path: /booking/:roomId
+    auth: true
+    nav: false
+    api: [POST /api/reservations/validate, POST /api/reservations, GET /api/rooms/{id}]
+    ui_source: spec-requests/resort-reservation/design_handoff_byul_resort/versionA-flow.jsx
+    components: [DualCalendar, ThemedCheckbox, YourStayCard]
+    description: |
+      2-step 플로우 (결제 Step 없음). 디자인 versionA-flow.jsx 기준.
+
+      [공통 레이아웃]
+        - 상단 풀폭 흰색 띠에 StepIndicator (●1 날짜·인원 ─── ○2 투숙객 정보)
+            * 활성·완료 step: filled ocean 원 + ink 라벨
+            * 비활성 step: mist 보더 원 + mist 라벨
+            * step 사이 구분선: w-12~24 / h-px / bg-line
+        - 본문: 좌측 main + 우측 360px sticky aside (lg 미만은 stack)
+        - 우측 aside = YourStayCard (gold 3px 상단 라인, 객실 썸네일 + 객실명/뷰/침대,
+          체크인·체크아웃·인원 요약). Step 1 은 가격 미노출, Step 2 는 가격 breakdown 노출.
+
+      [Step 1 — 날짜·인원]
+        - 좌측 메인 상단: 큰 세리프 타이틀 "머무실 날짜를 선택하세요" + 동적 서브타이틀
+            * checkIn 미선택 → "체크인 날짜를 선택해주세요."
+            * checkOut 미선택 → "체크아웃 날짜를 선택해주세요."
+            * 둘 다 선택 → "날짜를 변경하려면 원하는 날짜를 클릭하세요."
+        - 캘린더 카드: shared_components.DualCalendar 임베디드 (popover 아님,
+          항상 펼쳐진 상태). 절대 `<input type="date">` 두 칸으로 만들지 말 것.
+        - 인원 카드: 별도 흰 박스, "투숙 인원" 세리프 타이틀 + 성인/어린이
+          CounterRow (성인 만 13세 이상 min 1, 어린이 만 2~12세 min 0).
+        - 우측 sticky YourStayCard: 가격 영역 미노출. 좌측 selection 변경이
+          실시간으로 반영되어야 함 (checkIn/checkOut/adults/children 동기화).
+        - 하단 우측 정렬 "다음 단계 →" 버튼 (px-8 py-3, ocean bg, 풀너비 아님).
+          클릭 시 POST /api/reservations/validate. 실패 시 toast + 진행 차단.
+          성공 시 validation 응답 보관 후 Step 2 로 전환.
+
+      [Step 2 — 투숙객 정보]
+        - 좌측 메인 상단: 큰 세리프 타이틀 "투숙객 정보를 입력하세요"
+        - 카드 안에 예약자 정보 요약 (cream bg, 회원명·연락처) + ThemedCheckbox
+          "예약자와 동일" + 투숙자명/연락처/요청사항 필드.
+        - 우측 sticky YourStayCard 가격 영역 노출 — 일반회원 = 단일가 × 박수,
+          분양회원 = 일반가 취소선 + "분양회원 할인" 골드 라인 + 분양회원가 × 박수
+          + 총 결제 금액 (font-display 24px ocean).
+        - 하단 좌측 "← 이전" / 우측 "예약 확정" 버튼.
+          확정 시 POST /api/reservations → /booking/complete/:reservationNo 이동.
+    form_fields:
+      # Step 1
+      - { field: check_in_date,  label: 체크인,        type: date,     required: true, constraint: "today ~ today+6months" }
+      - { field: check_out_date, label: 체크아웃,      type: date,     required: true, constraint: "checkIn+1 ~ checkIn+7" }
+      - { field: adults,         label: 성인,          type: number,   required: true, min: 1 }
+      - { field: children,       label: 어린이,        type: number,   required: true, min: 0 }
+      # Step 2
+      - { field: is_same_guest,  label: 예약자와 동일, type: checkbox, default: false, note: "체크 시 로그인 회원 정보를 투숙자 정보로 자동 복사" }
+      - { field: guest_name,     label: 투숙자명,      type: text,     required: true }
+      - { field: guest_phone,    label: 투숙자 연락처, type: tel,      required: true }
+      - { field: special_request, label: 요청사항,     type: textarea, required: false }
+
+  - name: 예약 완료
+    module: user
+    path: /booking/complete/:reservationNo
+    auth: true
+    nav: false
+    api: [GET /api/reservations/by-no/{reservationNo}]
+    ui_source: spec-requests/resort-reservation/design_handoff_byul_resort/versionA-flow.jsx
+    description: |
+      체크 아이콘 + "예약이 확정되었습니다" + 예약번호 + 예약 카드 (객실/기간/인원/총액).
+      분양회원이면 "분양회원가" 뱃지 노출.
+      하단 CTA — "내 예약 보기" (outline) / "홈으로" (primary)
+
+  - name: 공지사항
+    module: user
+    path: /notices
+    auth: false
+    nav_order: 40
+    api: [GET /api/notices]
+    ui_source: spec-requests/resort-reservation/design_handoff_byul_resort/versionA-pages.jsx
+    description: 카테고리 필터(전체/공지/이벤트/시설) + 검색 + 페이지네이션(8건/페이지). is_pinned 먼저.
+
+  - name: 공지 상세
+    module: user
+    path: /notices/:id
+    auth: false
+    nav: false
+    api: [GET /api/notices/{id}]
+    description: 제목 + 분류 + 날짜 + 본문 + 목록으로 돌아가기. 진입 시 view_count +1.
+
+  - name: 마이페이지
+    module: user
+    path: /mypage
+    auth: true
+    show_when: logged_in
+    nav_order: 20
+    api:
+      - GET /api/members/me
+      - GET /api/reservations/my
+      - PUT /api/reservations/by-no/{reservationNo}/cancel
+    components: [ConfirmDialog]
+    description: |
+      프로필 헤더 (이름 + 회원유형 뱃지 — 일반회원/분양회원) + 내 예약 내역 리스트.
+      예약 카드 — 객실번호 + 객실명(클릭 시 /booking/complete/:no), 기간/인원/투숙자/총액/상태.
+
+      [예약 취소]
+        - 카드 하단 우측에 "상세 보기" + (조건부) "예약 취소" 버튼
+        - "예약 취소" 버튼 노출 조건 — status === 'CONFIRMED' AND check_in_date >= today
+          (이미 취소됐거나 투숙일이 오늘 이전이면 버튼 자체가 숨겨짐)
+        - 취소 버튼 스타일 — coral 보더/텍스트 (호버 시 coral 채움 + 흰 텍스트), 사이트
+          테마와 일치. ❌ 빨간색(red-500 등) 직접 사용 금지
+        - 클릭 시 ConfirmDialog (gold 상단 라인) — "예약번호 BR-... 객실명 (체크인 ~ 체크아웃)
+          예약을 취소하시겠습니까?". variant=danger.
+        - 확인 시 PUT /api/reservations/by-no/{reservationNo}/cancel → 성공 시 toast +
+          리스트 reload. 실패 시 toast (백엔드 메시지 그대로).
+    display_fields:
+      - { field: reservation_no,   label: 예약번호 }
+      - { field: room_name,        label: 객실명 }
+      - { field: check_in_date,    label: 체크인 }
+      - { field: check_out_date,   label: 체크아웃 }
+      - { field: nights,           label: 박수 }
+      - { field: adults,           label: 성인 }
+      - { field: children,         label: 어린이 }
+      - { field: guest_name,       label: 투숙자명 }
+      - { field: guest_phone,      label: 투숙자 연락처 }
+      - { field: total_price,      label: 총 금액 }
+      - { field: status,           label: 예약상태 }
+
+  # ==========================================
+  # admin 모듈 (frontend key=admin, port 5179)
+  # ==========================================
+
+  - name: 관리자 로그인
+    module: admin
+    path: /login
+    auth: false
+    show_when: logged_out
+    nav: false
+    api: [POST /api/admin/auth/login]
+    form_fields:
+      - { field: login_id, label: 아이디,   type: text,     required: true }
+      - { field: password, label: 비밀번호, type: password, required: true }
+    error_display: alert
+
+  - name: 대시보드
+    module: admin
+    path: /
+    auth: true
+    nav_order: 10
+    nav_group: 개요
+    api: [GET /api/admin/dashboard]
+    description: 오늘 체크인 건수 / 이번 달 예약 건수 / 총 회원 수 카드 3개.
+
+  - name: 객실 리스트
+    module: admin
+    path: /rooms
+    auth: true
+    nav_order: 20
+    nav_group: 객실
+    api: [GET /api/admin/rooms]
+    display_fields:
+      - { field: room_code,     label: 코드 }
+      - { field: room_name,     label: 객실명 }
+      - { field: category_name, label: 카테고리 }
+      - { field: capacity,      label: 최대 인원 }
+      - { field: default_price, label: 기본 요금 }
+      - { field: default_stock, label: 기본 재고 }
+      - { field: is_active,     label: 노출 }
+
+  - name: 객실 등록
+    module: admin
+    path: /rooms/new
+    auth: true
+    nav: false
+    api: [POST /api/admin/rooms]
+    form_fields:
+      - { field: room_code,         label: 코드,         type: text,     required: true }
+      - { field: room_name,         label: 객실명,       type: text,     required: true }
+      - { field: en_name,           label: 영문명,       type: text,     required: false }
+      - { field: category_code_id,  label: 카테고리,     type: select,   required: true, code_group: ROOM_CATEGORY }
+      - { field: description,       label: 소개,         type: textarea, required: false }
+      - { field: bed,               label: 침대,         type: text,     required: false }
+      - { field: size_sqm,          label: 크기(㎡),     type: number,   required: false }
+      - { field: capacity,          label: 최대 인원,    type: number,   required: true }
+      - { field: view_name,         label: 전망,         type: text,     required: false }
+      - { field: default_stock,     label: 기본 재고,    type: number,   required: true }
+      - { field: default_price,     label: 기본 요금,    type: number,   required: true }
+      - { field: thumbnail_file_id, label: 썸네일,       type: file,     required: false, accept: "image/*" }
+      - { field: gallery_file_ids,  label: 갤러리(최대 5장), type: file_multi, required: false, accept: "image/*", max: 5 }
+      - { field: amenity_code_ids,  label: 편의시설,     type: multi_select, required: false, code_group: ROOM_AMENITY }
+      - { field: badge_code_id,     label: 뱃지,         type: select,   required: false, code_group: ROOM_BADGE }
+      - { field: is_active,         label: 노출,         type: checkbox, default: true }
+
+  - name: 객실 수정
+    module: admin
+    path: /rooms/:id/edit
+    auth: true
+    nav: false
+    api: [GET /api/admin/rooms/{id}, PUT /api/admin/rooms/{id}, DELETE /api/admin/rooms/{id}]
+    description: 객실 등록과 동일 필드 + 삭제 버튼
+
+  - name: 재고·요금 캘린더
+    module: admin
+    path: /rooms/:id/calendar
+    auth: true
+    nav: false
+    api: [GET /api/admin/rooms/{id}/calendar, PUT /api/admin/rooms/{id}/calendar]
+    description: |
+      월별 캘린더 뷰로 각 일자의 재고/회원유형별 요금 표시 (fallback 값은 기본값으로 표기).
+      상단 "기간 일괄 적용" 패널:
+        - 기간 선택 (from ~ to)
+        - 재고 입력 (선택)
+        - 회원유형별 요금 입력 (GENERAL / PARCEL, 각각 선택)
+        - "적용" 버튼 → PUT /api/admin/rooms/{id}/calendar
+
+  - name: 예약가능 회원유형
+    module: admin
+    path: /rooms/:id/permissions
+    auth: true
+    nav: false
+    api: [GET /api/admin/rooms/{id}/permissions, PUT /api/admin/rooms/{id}/permissions]
+    form_fields:
+      - { field: member_types, label: 예약가능 회원유형, type: multi_checkbox, required: true, options: [GENERAL, PARCEL] }
+
+  - name: 회원 리스트
+    module: admin
+    path: /members
+    auth: true
+    nav_order: 30
+    nav_group: 회원
+    api: [GET /api/admin/members]
+    display_fields:
+      - { field: member_name,      label: 이름 }
+      - { field: login_id,         label: 아이디 }
+      - { field: phone,            label: 연락처 }
+      - { field: email,            label: 이메일 }
+      - { field: member_type,      label: 회원유형 }
+      - { field: parcel_member_no, label: 분양회원번호 }
+      - { field: created_at,       label: 가입일 }
+
+  - name: 회원 상세
+    module: admin
+    path: /members/:id
+    auth: true
+    nav: false
+    api: [GET /api/admin/members/{id}]
+
+  - name: 예약 리스트
+    module: admin
+    path: /reservations
+    auth: true
+    nav_order: 40
+    nav_group: 예약
+    api: [GET /api/admin/reservations]
+    display_fields:
+      - { field: reservation_no,    label: 예약번호 }
+      - { field: room_name,         label: 객실명 }
+      - { field: member_name,       label: 회원명 }
+      - { field: check_in_date,     label: 체크인 }
+      - { field: check_out_date,    label: 체크아웃 }
+      - { field: nights,            label: 박수 }
+      - { field: total_price,       label: 총 금액 }
+      - { field: status,            label: 상태 }
+
+  - name: 예약 상세
+    module: admin
+    path: /reservations/:id
+    auth: true
+    nav: false
+    api: [GET /api/admin/reservations/{id}, PUT /api/admin/reservations/{id}/cancel]
+    description: 상세 + 일자별 요금 스냅샷 + 취소 버튼 (CONFIRMED 일 때만)
+
+  - name: 공지 리스트
+    module: admin
+    path: /notices
+    auth: true
+    nav_order: 50
+    nav_group: 콘텐츠
+    api: [GET /api/admin/notices]
+    display_fields:
+      - { field: notice_id,     label: 번호 }
+      - { field: category_name, label: 분류 }
+      - { field: title,         label: 제목 }
+      - { field: is_pinned,     label: 고정 }
+      - { field: view_count,    label: 조회 }
+      - { field: created_at,    label: 작성일 }
+
+  - name: 공지 등록
+    module: admin
+    path: /notices/new
+    auth: true
+    nav: false
+    api: [POST /api/admin/notices]
+    form_fields:
+      - { field: title,            label: 제목,   type: text,     required: true }
+      - { field: category_code_id, label: 분류,   type: select,   required: true, code_group: NOTICE_CATEGORY }
+      - { field: content,          label: 내용,   type: textarea, required: true }
+      - { field: is_pinned,        label: 상단 고정, type: checkbox, default: false }
+
+  - name: 공지 수정
+    module: admin
+    path: /notices/:id/edit
+    auth: true
+    nav: false
+    api: [GET /api/admin/notices/{id}, PUT /api/admin/notices/{id}, DELETE /api/admin/notices/{id}]
+
+## -------------------------------------------------------
+## 7. 권한 / 인증
+## -------------------------------------------------------
+##
+## 주의:
+##   - v2 는 role 컬럼을 사용하지 않는다 — 테이블/세션 분리로 경계 확보.
+##   - user 백엔드: Member 세션 (쿠키 USER_SID). admin 백엔드: AdminUser 세션 (쿠키 ADMIN_SID).
+##   - 같은 브라우저에서 두 세션 동시 존재 가능.
+##   - 각 백엔드는 SessionAuthFilter 하나씩 (role 체크 불필요, 세션 존재 여부 + 대상 테이블 조회만).
+##
+auth:
+  method: session
+
+  user:
+    entity: Member
+    session_cookie: USER_SID
+    login_path: /login
+    public_pages:
+      - /
+      - /signup
+      - /login
+      - /rooms/:id        # 비로그인 진입 시 프론트가 /login 으로 리다이렉트
+      - /rooms            # 동일
+      - /notices
+      - /notices/:id
+    protected_pages:
+      - /booking/:roomId
+      - /booking/complete/:reservationNo
+      - /mypage
+    rule: |
+      비로그인 사용자가 protected 페이지 접근 시 /login 으로 리다이렉트 (redirectTo query 로 원 경로 보존).
+      메인(/) 은 public 이지만 /rooms, /rooms/:id 는 검색 제출/상세 클릭 시 비로그인이면 /login 으로 이동.
+
+  admin:
+    entity: AdminUser
+    session_cookie: ADMIN_SID
+    login_path: /login
+    public_pages:
+      - /login
+    protected_pages: ["**"]
+    rule: 비로그인 AdminUser 는 /login 으로 리다이렉트
+
+## -------------------------------------------------------
+## 8. 핵심 비즈니스 로직 요약
+## -------------------------------------------------------
+business_rules:
+  # 계정
+  - parcel_member_no 존재 → member_type=PARCEL, 없으면 GENERAL (형식 검증 없음, 입력 여부만 판단)
+  - 관리자는 AdminUser 테이블로만 관리. Member 와 별도 (role 컬럼 없음)
+  - user / admin 세션은 쿠키 이름 분리 (USER_SID / ADMIN_SID)
+
+  # 요금 / 재고 fallback
+  - 가격 우선순위 — RoomDailyPrice(room, date, memberType) > Room.default_price
+  - 재고 우선순위 — RoomInventory(room, date) > Room.default_stock
+  - default_price 는 회원유형 무관 단일값 (관리자가 지정)
+
+  # 메인 / 리스트 / 상세
+  - 메인(/) 은 public, default_price 기준으로 객실 노출
+  - 메인 기본 검색 프리셋 — 오늘 체크인 / 내일 체크아웃 / 성인 2 / 어린이 0
+  - 검색 제출 or 객실 카드 클릭 시 비로그인이면 /login 으로 (redirectTo 보존), 로그인이면 /rooms 또는 /rooms/:id 로
+  - /rooms, /rooms/:id 는 조건+회원유형 기반으로 재고/가격/권한 검증. 불충족 객실은 리스트에서 제외, 상세에서는 메인 복귀
+  - 다박(nights ≥ 2) 이면 상세/예약 화면에 일자별 요금 표시
+
+  # 예약 제약
+  - 1 ≤ nights ≤ 7
+  - check_in_date ∈ [today, today + 6months]
+  - check_out_date = check_in_date + nights
+  - 1예약 = 1객실 고정 (2실 이상 불가)
+  - adults ≥ 1, adults + children ≤ Room.capacity
+
+  # 예약 플로우
+  - 예약은 2-step (날짜·인원 → 투숙객 정보). 결제 Step 없음
+  - Step 1 → Step 2 전환 시 POST /api/reservations/validate 로 재검증 + 요금 재계산
+  - Step 2 "예약 확정" 시 POST /api/reservations 로 insert. 내부에서 validate 재수행 (동시성 대비)
+  - 예약 확정 시 ReservationDailyPrice 에 해당 기간 각 일자의 요금 스냅샷 저장
+
+  # 재고 차감 / 복구
+  - 예약 확정 — 해당 기간 각 일자의 RoomInventory 행 upsert + stock_count -= 1
+  - 예약 취소 — 해당 기간 각 일자의 RoomInventory 행의 stock_count += 1 (행이 없는 일자는 default_stock fallback 으로 자연 복원)
+
+  # 예약 취소 권한
+  - 본인 취소 (마이페이지) — Member 세션 소유 + status=CONFIRMED + checkInDate >= today 일 때만 허용. 위반 시 4xx 에러 메시지 반환 ("이미 지난 일정의 예약은 취소할 수 없습니다." / "이미 취소된 예약입니다." / "본인 예약만 취소할 수 있습니다.")
+  - 관리자 취소 (어드민) — 시점 제약 없음, status=CONFIRMED 인 예약만. 어떤 일자라도 취소 가능 (불참·환불 처리 등 운영 목적)
+
+  # 공지
+  - 공지 리스트는 is_pinned=true 먼저 (created_at DESC). 페이지당 8건
+  - 공지 상세 진입 시 view_count += 1
+
+  # 관리자
+  - 관리자 대시보드 카드 — 오늘 체크인 / 이번 달 예약 / 총 회원 수
+  - 일자별 재고/요금은 "기간(from~to) 일괄 적용" UI 로만 변경 (요일 선택 미지원)

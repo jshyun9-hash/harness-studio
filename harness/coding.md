@@ -31,6 +31,10 @@
 - 커스텀 훅으로 비즈니스 로직 분리
 - API 호출은 api/ 레이어에서만
 - **인증 보호 페이지**: `authLoading` 완료 후에만 `!member` 판단 → 리다이렉트 (세션 비동기 확인 중 오판 방지)
+- **컴포넌트 정의는 모듈 최상위에서만 (다른 컴포넌트 내부에 정의 금지)**:
+  렌더 함수 본문에서 새 컴포넌트를 정의하면 매 렌더마다 새 컴포넌트 타입이 만들어져 자식 DOM 이 unmount/remount → **input focus 손실 / 자식 state 초기화** 가 발생한다 (한 글자 입력 시 포커스 빠지는 증상). 폼/입력이 있는 페이지에서 특히 치명적.
+  → 보조 컴포넌트(Field, Row, Section 등)는 페이지 함수 **밖**으로 추출. 작은 마크업 조각이면 컴포넌트로 만들지 않고 그냥 JSX 인라인.
+  → 자세한 사례: lessons-learned #21.
 
 ```typescript
 // ✅ 올바른 예
@@ -40,8 +44,29 @@ interface Props {
 
 export default function NoticeCard({ items }: Props) { }
 
-// ❌ 금지
+// ❌ 금지 — any 사용
 const NoticeCard = ({ items }: any) => { }
+
+// ❌ 금지 — 컴포넌트 안에 컴포넌트 정의 (input focus 손실)
+export default function SignupPage() {
+  // ...
+  const Field = ({ label, children }: { label: string; children: ReactNode }) => (
+    <div><label>{label}</label>{children}</div>
+  );
+  return (<form>
+    <Field label="아이디"><input value={loginId} onChange={...} /></Field>
+  </form>);
+}
+
+// ✅ 올바른 패턴 — Field 를 모듈 최상위로 추출
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return <div><label>{label}</label>{children}</div>;
+}
+export default function SignupPage() {
+  return (<form>
+    <Field label="아이디"><input value={loginId} onChange={...} /></Field>
+  </form>);
+}
 ```
 
 ### 반응형 규칙

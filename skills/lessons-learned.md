@@ -128,3 +128,43 @@
     }
     ```
     대안: derived delete 대신 `@Modifying @Query("delete from TitleGenre tg where tg.titleId = :titleId")` 로 벌크 JPQL DELETE 사용 (자동 flush, 1차 캐시 무효화 옵션 가능). 두 방식 다 허용하되, 기본은 **flush 강제** 패턴을 권장 — derived 메서드의 단순함을 유지. 재현 프로젝트: prototype v1 (2026-04-19 수동 정정, v2 하네스 반영).
+
+21. **다른 컴포넌트 내부에 컴포넌트를 정의하면 input focus 가 빠진다 (매 렌더마다 컴포넌트 type 이 새로 만들어짐)** — 페이지 함수 본문에서 보조 컴포넌트(`Field`, `Row`, `Section` 등)를 정의하고 그 안에 controlled input 을 넣으면, 키 입력 한 번 → 부모 state 변경 → 부모 리렌더 → "새 Field 함수 객체" → React reconciler 가 **다른 컴포넌트 type** 으로 인식 → 기존 DOM 트리 unmount + 새 트리 mount → `<input>` 도 새로 만들어져 **포커스 손실 + 한글 IME 합성 중단**. 한 글자만 치고 포커스가 빠지는 전형적인 증상.
+    ```tsx
+    // ❌ 한 글자 치면 포커스 손실
+    export default function SignupPage() {
+      const [loginId, setLoginId] = useState('');
+      // 매 렌더마다 새 Field 함수 객체 → 자식 DOM 매번 remount
+      const Field = ({ label, children }: { label: string; children: ReactNode }) => (
+        <div className="mb-5">
+          <label>{label}</label>
+          {children}
+        </div>
+      );
+      return (
+        <form>
+          <Field label="아이디">
+            <input value={loginId} onChange={(e) => setLoginId(e.target.value)} />
+          </Field>
+        </form>
+      );
+    }
+
+    // ✅ Field 를 모듈 최상위로 추출 (한 번만 정의되어 같은 컴포넌트 type 유지)
+    interface FieldProps { label: string; children: ReactNode; }
+    function Field({ label, children }: FieldProps) {
+      return <div className="mb-5"><label>{label}</label>{children}</div>;
+    }
+
+    export default function SignupPage() {
+      const [loginId, setLoginId] = useState('');
+      return (
+        <form>
+          <Field label="아이디">
+            <input value={loginId} onChange={(e) => setLoginId(e.target.value)} />
+          </Field>
+        </form>
+      );
+    }
+    ```
+    같은 원리로 `useMemo` 안에서 컴포넌트를 만들거나, props 로 컴포넌트 타입을 매 렌더 새로 넘기는 패턴도 동일한 증상. **규칙**: 페이지/컴포넌트 함수 내부에서 `function X(...)` 또는 `const X = (...) =>` 로 컴포넌트를 정의하지 않는다. 보조 마크업이 필요하면 (1) 모듈 최상위로 추출하거나, (2) 컴포넌트로 만들지 않고 JSX 를 인라인으로 둔다. 재현 프로젝트: resort-reservation v2 (2026-04-21 SignupPage Field 패턴, v3 하네스 반영).
